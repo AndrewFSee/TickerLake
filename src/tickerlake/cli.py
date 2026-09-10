@@ -333,8 +333,10 @@ def cmd_l2(args: argparse.Namespace) -> int:
 
     symbols = _symbols(args)
     if not symbols:
-        print("Specify --symbols; reconstructing all 10,000+ IEX symbols is not the intent.",
-              file=sys.stderr)
+        print(
+            "Specify --symbols; reconstructing all 10,000+ IEX symbols is not the intent.",
+            file=sys.stderr,
+        )
         return 1
     if not args.date:
         print("Specify --date YYYY-MM-DD.", file=sys.stderr)

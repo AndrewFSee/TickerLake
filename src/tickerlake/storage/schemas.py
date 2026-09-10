@@ -84,6 +84,7 @@ INTRADAY_BARS_SCHEMA = pa.schema(
     ]
 )
 
+
 def _book_snapshot_schema(depth: int = 5) -> pa.Schema:
     """L2 snapshots. Level count is configurable, so the schema is generated."""
     fields = [
@@ -390,6 +391,10 @@ class ValidationRule:
     not_all_null: tuple[str, ...] = ()
     positive: tuple[str, ...] = ()
     non_negative: tuple[str, ...] = ()
+    # (a, b) pairs where a >= b must hold, e.g. ("high", "low"). Yahoo does
+    # emit bars that violate this on broken tickers, and nothing else here
+    # would notice.
+    at_least: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -421,6 +426,7 @@ RULES: dict[str, ValidationRule] = {
         unique_on=("symbol", "date"),
         not_all_null=("close",),
         non_negative=("volume",),
+        at_least=(("high", "low"), ("high", "close"), ("close", "low")),
     ),
     P.OPTIONS_CHAINS: ValidationRule(
         min_rows=1,
@@ -443,6 +449,7 @@ RULES: dict[str, ValidationRule] = {
         unique_on=("symbol", "datetime", "interval"),
         not_all_null=("close",),
         non_negative=("volume",),
+        at_least=(("high", "low"),),
     ),
     P.BOOK_SNAPSHOTS: ValidationRule(
         min_rows=1,
@@ -563,6 +570,20 @@ def validate_frame(df, dataset: str, strict: bool = False) -> ValidationReport:
             bad = int((values < 0).sum())
             if bad:
                 report.errors.append(f"column '{col}' has {bad} negative value(s)")
+
+    # Cross-column ordering. Reported as a warning, not an error: these are
+    # genuine source defects on a handful of broken tickers, and discarding an
+    # otherwise good 500-row day over seven bad cells would lose more than it
+    # protects. Flagging makes them findable.
+    for higher, lower in rule.at_least:
+        if higher in df.columns and lower in df.columns:
+            a = pd.to_numeric(df[higher], errors="coerce")
+            b = pd.to_numeric(df[lower], errors="coerce")
+            bad = int((a < b).sum())
+            if bad:
+                report.warnings.append(
+                    f"{bad} row(s) violate {higher} >= {lower} - malformed source bars"
+                )
 
     if rule.unique_on and all(c in df.columns for c in rule.unique_on):
         dupes = int(df.duplicated(subset=list(rule.unique_on)).sum())

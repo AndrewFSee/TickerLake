@@ -252,7 +252,20 @@ class YFinanceOHLCVFetcher(BaseFetcher):
     def _write_by_month(
         self, df: pd.DataFrame, run_date: date, mode: str, result: FetchResult
     ) -> None:
-        """Route rows to the partition of each bar's own date."""
+        """Route rows to the partition of each bar's own date.
+
+        Both backfill and the daily incremental merge into the month's single
+        consolidated file rather than the incremental dropping a separate delta
+        beside it. The delta pattern is right for options, where per-symbol files
+        are the unit of resumability -- but here it is actively harmful: the
+        incremental re-fetches a multi-day lookback that *overlaps* whatever the
+        backfill already wrote, so a delta sitting next to ``data.parquet``
+        duplicates every overlapping bar until the weekly compaction runs.
+        Queries in that window silently double-count.
+
+        A month file is a few thousand rows, so merging into it daily is cheap,
+        and the writer's atomic replace makes it safe.
+        """
         df = df.copy()
         dates = pd.to_datetime(df["date"])
         df["_year"] = dates.dt.year
@@ -260,12 +273,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
         for (year, month), group in df.groupby(["_year", "_month"], sort=True):
             group = group.drop(columns=["_year", "_month"])
-            if self.backfill:
-                path = self.paths.ohlcv_backfill_file(int(year), int(month))
-            else:
-                path = self.paths.ohlcv_partition(int(year), int(month))
-                path.mkdir(parents=True, exist_ok=True)
-                path = path / f"_daily_{run_date.isoformat()}.parquet"
+            path = self.paths.ohlcv_backfill_file(int(year), int(month))
 
             write = self.writer.write(group, P.OHLCV, path, mode=mode)
             result.record_write(write)

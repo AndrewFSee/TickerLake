@@ -438,7 +438,9 @@ def reconstruct_day(
     out_path = paths.book_snapshot_file(day)
     if out_path.exists() and not overwrite:
         existing = pd.read_parquet(out_path)
-        log.info("%s already reconstructed (%d rows); pass overwrite=True to redo", day, len(existing))
+        log.info(
+            "%s already reconstructed (%d rows); pass overwrite=True to redo", day, len(existing)
+        )
         return {"date": day.isoformat(), "rows": len(existing), "skipped": True}
 
     archive = IEXDeepArchive()
@@ -452,7 +454,9 @@ def reconstruct_day(
 
     log.info(
         "reconstructing %s for %d symbol(s) at depth %d - expect ~20 min and ~11 GB of download",
-        day, len(symbols), depth,
+        day,
+        len(symbols),
+        depth,
     )
     reconstructor = DeepReconstructor(symbols, depth=depth, market_hours_only=market_hours_only)
     df = reconstructor.run(url, day)

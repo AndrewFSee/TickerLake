@@ -493,7 +493,12 @@ def _extract_text(raw: str, doc_name: str) -> str:
         # Inline XBRL also hides its header behind display:none rather than a
         # dedicated tag in some filer templates.
         for tag in soup.find_all(style=True):
-            style = str(tag.get("style", "")).replace(" ", "").lower()
+            # ``tag.attrs`` is None for some nodes lxml produces from malformed
+            # filer HTML, and Tag.get() dereferences it without checking. Read
+            # the mapping directly rather than trusting find_all(style=True) to
+            # imply a usable attrs dict.
+            attrs = getattr(tag, "attrs", None) or {}
+            style = str(attrs.get("style", "")).replace(" ", "").lower()
             if "display:none" in style or "visibility:hidden" in style:
                 tag.decompose()
         text = soup.get_text("\n")

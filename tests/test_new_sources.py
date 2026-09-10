@@ -114,3 +114,59 @@ def test_finra_short_ratio_and_symbol_normalisation(tmp_path):
     assert ratio.iloc[0] == pytest.approx(418949.64 / 779188.03)
     # A symbol that did not trade must yield NULL, not a divide-by-zero inf.
     assert pd.isna(ratio.iloc[2])
+
+
+# ------------------------------------------------------------- sec text
+
+
+def test_extract_text_survives_none_attrs():
+    """lxml yields nodes whose ``attrs`` is None on malformed filer HTML.
+
+    ``find_all(style=True)`` still returns them, and ``Tag.get()`` dereferences
+    ``attrs`` without checking -- which took down two real 8-K filings (UDR and
+    QCOM) in a production run.
+    """
+    from bs4 import BeautifulSoup
+
+    from tickerlake.fetchers.sec_edgar import _extract_text
+
+    html = (
+        "<html><body>"
+        "<div style='display:none'>HIDDEN XBRL HEADER</div>"
+        "<p>Visible filing prose.</p>"
+        "</body></html>"
+    )
+    real_find_all = BeautifulSoup.find_all
+
+    def find_all_with_broken_node(self, *args, **kwargs):
+        found = real_find_all(self, *args, **kwargs)
+        if kwargs.get("style") is True:
+            for tag in found:
+                tag.attrs = None  # reproduce the lxml edge case
+        return found
+
+    BeautifulSoup.find_all = find_all_with_broken_node
+    try:
+        text = _extract_text(html, "filing.htm")
+    finally:
+        BeautifulSoup.find_all = real_find_all
+
+    assert "Visible filing prose." in text
+
+
+def test_extract_text_strips_inline_xbrl_header():
+    """The hidden ix:header must not end up in the extracted prose."""
+    from tickerlake.fetchers.sec_edgar import _extract_text
+
+    html = (
+        "<html><body>"
+        "<ix:header><ix:hidden>us-gaap:CommonStockMember 0001018724</ix:hidden></ix:header>"
+        "<div style='display:none'>0001018724 false 2026-09-08</div>"
+        "<p>UNITED STATES SECURITIES AND EXCHANGE COMMISSION</p>"
+        "</body></html>"
+    )
+    text = _extract_text(html, "amzn-20260908.htm")
+
+    assert "UNITED STATES SECURITIES" in text
+    assert "us-gaap:CommonStockMember" not in text
+    assert "0001018724" not in text

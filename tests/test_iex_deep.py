@@ -168,10 +168,12 @@ def test_untracked_symbols_are_counted_but_not_booked():
     r = _reconstructor(("AAPL",))
     ts = 14 * 3600 * 1_000_000_000
     r._handle_payload(
-        _payload([
-            _price_level("AAPL", 315.0, 100, ts, True),
-            _price_level("TSLA", 400.0, 100, ts, True),
-        ])
+        _payload(
+            [
+                _price_level("AAPL", 315.0, 100, ts, True),
+                _price_level("TSLA", 400.0, 100, ts, True),
+            ]
+        )
     )
     assert r.stats["updates"] == 2, "every update is counted"
     assert len(r.books) == 1, "but only tracked symbols get a book"
@@ -211,10 +213,12 @@ def test_minute_rollover_emits_a_snapshot():
     base = 14 * 3600 * 1_000_000_000  # 14:00 UTC
 
     r._handle_payload(
-        _payload([
-            _price_level("AAPL", 315.00, 100, base, True),
-            _price_level("AAPL", 315.10, 200, base + 1_000_000_000, False),
-        ])
+        _payload(
+            [
+                _price_level("AAPL", 315.00, 100, base, True),
+                _price_level("AAPL", 315.10, 200, base + 1_000_000_000, False),
+            ]
+        )
     )
     assert r.rows == [], "nothing emitted until the minute turns"
 
@@ -234,10 +238,12 @@ def test_microprice_leans_toward_the_thinner_side():
     r = _reconstructor()
     base = 14 * 3600 * 1_000_000_000
     r._handle_payload(
-        _payload([
-            _price_level("AAPL", 100.00, 900, base, True),   # heavy bid
-            _price_level("AAPL", 100.10, 100, base, False),  # thin ask
-        ])
+        _payload(
+            [
+                _price_level("AAPL", 100.00, 900, base, True),  # heavy bid
+                _price_level("AAPL", 100.10, 100, base, False),  # thin ask
+            ]
+        )
     )
     r._handle_payload(_payload([_price_level("AAPL", 100.00, 900, base + MINUTE_NS, True)]))
 
@@ -251,10 +257,12 @@ def test_depth_columns_are_padded_when_the_book_is_shallow():
     r = _reconstructor()
     base = 14 * 3600 * 1_000_000_000
     r._handle_payload(
-        _payload([
-            _price_level("AAPL", 100.00, 100, base, True),
-            _price_level("AAPL", 100.10, 100, base, False),
-        ])
+        _payload(
+            [
+                _price_level("AAPL", 100.00, 100, base, True),
+                _price_level("AAPL", 100.10, 100, base, False),
+            ]
+        )
     )
     r._handle_payload(_payload([_price_level("AAPL", 100.00, 100, base + MINUTE_NS, True)]))
 
