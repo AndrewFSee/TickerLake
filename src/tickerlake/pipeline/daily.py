@@ -193,6 +193,7 @@ class DailyPipeline:
 
             live = SRC.fetch_live_constituents(self.config.get("universe.live_url"))
             diff = self.tracker.refresh(live, observed_date=run_date)
+            self._register_etfs()
             if diff.rejected:
                 # A rejected diff means the parse looked wrong; the stored table
                 # is deliberately left untouched.
@@ -216,6 +217,31 @@ class DailyPipeline:
             result.add_error(f"{type(exc).__name__}: {exc}")
             summary.stages.append(result)
             return None
+
+    def _register_etfs(self) -> None:
+        """Add any newly configured ETFs to the collection universe.
+
+        Cheap and idempotent: existing tickers are left alone, so this just
+        picks up edits to the config list. ETFs are never removed here -- taking
+        one out of the config stops future collection but its stored history
+        stays, exactly as a delisted constituent's does.
+        """
+        if not self.config.get("etfs.enabled", False):
+            return
+        symbols = self.config.get("etfs.symbols") or {}
+        if not symbols:
+            return
+
+        history_start = self.config.get("etfs.history_start")
+        added, present = self.tracker.register_static(
+            symbols,
+            index_name=self.config.get("etfs.index_name", "ETF"),
+            start_date=date.fromisoformat(history_start) if history_start else None,
+        )
+        if added:
+            log.warning("ETF universe: %d new (%s)", len(added), ", ".join(added[:15]))
+        else:
+            log.info("ETF universe: %d tracked, no changes", len(present))
 
     def _analytics_stage(self, run_date: date, summary: RunSummary) -> None:
         """Derive IV, Greeks, and flow ratios from the chains just collected.
@@ -345,11 +371,20 @@ def _build_tracker(
     config: Config, paths: P.DatasetPaths, writer: ParquetWriter
 ) -> MembershipTracker:
     history_start = config.get("universe.history_start")
+    index_name = config.get("universe.index", "SP500")
+
+    # ETFs are collected alongside the index but are not part of it. Only
+    # collect_indices widens; index_name stays the survivorship scope.
+    collect = [index_name]
+    if config.get("etfs.enabled", False):
+        collect.append(config.get("etfs.index_name", "ETF"))
+
     return MembershipTracker(
         paths=paths,
         writer=writer,
-        index_name=config.get("universe.index", "SP500"),
+        index_name=index_name,
         history_start=date.fromisoformat(history_start) if history_start else None,
         silent_delist_threshold=int(config.get("universe.silent_delist_threshold_runs", 5)),
         post_removal_grace_days=int(config.get("universe.post_removal_grace_days", 30)),
+        collect_indices=collect,
     )

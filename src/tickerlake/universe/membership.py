@@ -27,7 +27,7 @@ import pandas as pd
 
 from tickerlake.storage import paths as P
 from tickerlake.storage.writer import ParquetWriter
-from tickerlake.universe.sources import LiveConstituent
+from tickerlake.universe.sources import LiveConstituent, normalize_symbol
 
 log = logging.getLogger(__name__)
 
@@ -112,10 +112,20 @@ class MembershipTracker:
         history_start: date | None = None,
         silent_delist_threshold: int = 5,
         post_removal_grace_days: int = 30,
+        collect_indices: list[str] | None = None,
     ) -> None:
         self.paths = paths
         self.writer = writer
         self.index_name = index_name
+        # Two different questions live in this table and must not be conflated:
+        #
+        #   "who was in the S&P 500 on date X"  -> index_name, always
+        #   "whose data do we go and fetch"     -> collect_indices
+        #
+        # ETFs belong to the second and never the first. Filing them under
+        # index_name would make members_on() return 560 constituents and
+        # silently corrupt every survivorship-sensitive query built on it.
+        self.collect_indices = list(collect_indices) if collect_indices else [index_name]
         self.history_start = history_start
         self.silent_delist_threshold = silent_delist_threshold
         self.post_removal_grace_days = post_removal_grace_days
@@ -226,6 +236,67 @@ class MembershipTracker:
             int(self._df["end_date"].isna().sum()),
         )
         return len(self._df)
+
+    def register_static(
+        self, symbols: dict[str, str], index_name: str, start_date: date | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Add non-index instruments (ETFs) to the collection universe.
+
+        ``symbols`` maps ticker -> description. These get open-ended intervals
+        under their own ``index_name``, which keeps them out of index membership
+        queries while making every fetcher pick them up automatically.
+
+        Unlike index constituents there is nothing to reconcile: an ETF is not
+        added or dropped by a committee, so this only ever appends new tickers
+        and refreshes descriptions. Removing one means editing the config, and
+        its history is retained exactly as a delisted stock's would be.
+
+        Returns (added, already_present).
+        """
+        df = self.load()
+        existing = set(df.loc[df["index_name"] == index_name, "symbol"]) if len(df) else set()
+
+        wanted = {normalize_symbol(k): v for k, v in symbols.items()}
+        added = sorted(set(wanted) - existing)
+        present = sorted(set(wanted) & existing)
+
+        now = datetime.now(UTC)
+        start = start_date or (self.history_start or date.today())
+
+        rows = df.to_dict("records") if len(df) else []
+        for row in rows:
+            # Keep descriptions current without touching interval bounds.
+            if row.get("index_name") == index_name and row["symbol"] in wanted:
+                row["company_name"] = wanted[row["symbol"]]
+
+        for symbol in added:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "index_name": index_name,
+                    "start_date": start,
+                    "end_date": None,
+                    "company_name": wanted[symbol],
+                    "gics_sector": None,
+                    "gics_sub_industry": None,
+                    "cik": None,
+                    "reason_added": "config:static_universe",
+                    "reason_removed": None,
+                    "source": "config",
+                    "first_seen_utc": now,
+                    "last_seen_utc": now,
+                    "consecutive_empty_runs": 0,
+                    "suspected_delisted": False,
+                    "last_data_date": pd.NaT,
+                }
+            )
+
+        if added:
+            self._df = _normalize_dates(pd.DataFrame(rows, columns=MEMBERSHIP_COLUMNS))
+            log.info("registered %d new %s symbol(s): %s", len(added), index_name, ", ".join(added[:12]))
+        elif rows:
+            self._df = _normalize_dates(pd.DataFrame(rows, columns=MEMBERSHIP_COLUMNS))
+        return added, present
 
     # --------------------------------------------------------------- refresh
 
@@ -486,20 +557,36 @@ class MembershipTracker:
 
     # -------------------------------------------------------- universe views
 
-    def current_members(self) -> list[str]:
+    def current_members(self, index_name: str | None = None) -> list[str]:
+        """Symbols currently tracked for collection.
+
+        Spans every configured collect index (S&P 500 plus ETFs), because this
+        answers "who do we fetch today". Pass ``index_name`` to scope it to one.
+        """
         df = self.load()
         if df.empty:
             return []
-        mask = (df["index_name"] == self.index_name) & df["end_date"].isna()
+        indices = [index_name] if index_name else self.collect_indices
+        mask = df["index_name"].isin(indices) & df["end_date"].isna()
         return sorted(df.loc[mask, "symbol"].unique())
 
-    def members_on(self, as_of: date) -> list[str]:
+    def members_on(self, as_of: date, index_name: str | None = None) -> list[str]:
+        """Point-in-time index constituents.
+
+        Deliberately scoped to a single index and never to collect_indices: this
+        is the survivorship primitive, and an ETF has no business appearing in
+        the answer to "who was in the S&P 500 on this date".
+        """
         df = self.load()
         if df.empty:
             return []
         end = df["end_date"].map(lambda d: date(9999, 12, 31) if pd.isna(d) else _as_date(d))
         start = df["start_date"].map(_as_date)
-        mask = (df["index_name"] == self.index_name) & (start <= as_of) & (end >= as_of)
+        mask = (
+            (df["index_name"] == (index_name or self.index_name))
+            & (start <= as_of)
+            & (end >= as_of)
+        )
         return sorted(df.loc[mask, "symbol"].unique())
 
     def tracked_symbols(self, as_of: date | None = None) -> list[str]:
@@ -515,7 +602,7 @@ class MembershipTracker:
         if df.empty:
             return []
 
-        index_mask = df["index_name"] == self.index_name
+        index_mask = df["index_name"].isin(self.collect_indices)
         current = df["end_date"].isna()
         cutoff = as_of - timedelta(days=self.post_removal_grace_days)
         recently_removed = df["end_date"].notna() & (
@@ -530,7 +617,7 @@ class MembershipTracker:
         df = self.load()
         if df.empty:
             return []
-        mask = (df["index_name"] == self.index_name) & df["suspected_delisted"].fillna(
+        mask = df["index_name"].isin(self.collect_indices) & df["suspected_delisted"].fillna(
             False
         ).astype(bool)
         return sorted(df.loc[mask, "symbol"].unique())

@@ -246,3 +246,107 @@ def test_seed_refuses_to_overwrite_without_force(tracker):
         tracker.seed(
             _seed_frame([{"symbol": "B", "start_date": date(2010, 1, 1), "end_date": None}])
         )
+
+
+# ----------------------------------------------------- ETFs vs index members
+
+
+@pytest.fixture
+def dual_tracker(tmp_path):
+    """A tracker collecting both S&P constituents and ETFs."""
+    paths = DatasetPaths(tmp_path)
+    paths.ensure_layout()
+    return MembershipTracker(
+        paths=paths,
+        writer=ParquetWriter(),
+        index_name="SP500",
+        history_start=date(2010, 1, 1),
+        collect_indices=["SP500", "ETF"],
+    )
+
+
+def _seed_and_register(tracker):
+    tracker.seed(
+        _seed_frame(
+            [
+                {"symbol": "AAPL", "start_date": date(2010, 1, 1), "end_date": None},
+                {"symbol": "GONE", "start_date": date(2010, 1, 1), "end_date": date(2015, 6, 30)},
+            ]
+        ),
+        force=True,
+    )
+    tracker.register_static({"SPY": "SPDR S&P 500", "XLK": "Technology"}, index_name="ETF")
+
+
+def test_etfs_never_appear_in_point_in_time_membership(dual_tracker):
+    """The whole reason ETFs get their own index_name.
+
+    members_on() is the survivorship primitive. An ETF showing up there would
+    silently inflate every historical universe and corrupt any backtest built
+    on it.
+    """
+    _seed_and_register(dual_tracker)
+
+    for as_of in (date(2012, 1, 1), date(2020, 1, 1), date(2026, 1, 1)):
+        members = dual_tracker.members_on(as_of)
+        assert "SPY" not in members
+        assert "XLK" not in members
+
+    assert dual_tracker.members_on(date(2012, 1, 1)) == ["AAPL", "GONE"]
+    assert dual_tracker.members_on(date(2020, 1, 1)) == ["AAPL"]
+
+
+def test_etfs_are_included_in_the_collection_universe(dual_tracker):
+    """...but every fetcher must still pick them up."""
+    _seed_and_register(dual_tracker)
+
+    current = dual_tracker.current_members()
+    assert "SPY" in current and "XLK" in current and "AAPL" in current
+    assert set(dual_tracker.tracked_symbols()) >= {"AAPL", "GONE", "SPY", "XLK"}
+
+
+def test_current_members_can_be_scoped_to_one_index(dual_tracker):
+    _seed_and_register(dual_tracker)
+
+    assert dual_tracker.current_members("SP500") == ["AAPL"]
+    assert dual_tracker.current_members("ETF") == ["SPY", "XLK"]
+    assert len(dual_tracker.current_members()) == 3
+
+
+def test_registering_etfs_is_idempotent(dual_tracker):
+    _seed_and_register(dual_tracker)
+    before = len(dual_tracker.load())
+
+    added, present = dual_tracker.register_static(
+        {"SPY": "SPDR S&P 500", "XLK": "Technology"}, index_name="ETF"
+    )
+    assert added == []
+    assert set(present) == {"SPY", "XLK"}
+    assert len(dual_tracker.load()) == before, "re-registering must not duplicate rows"
+
+
+def test_registering_only_appends_new_etfs(dual_tracker):
+    _seed_and_register(dual_tracker)
+    added, present = dual_tracker.register_static(
+        {"SPY": "SPDR S&P 500", "GLD": "SPDR Gold Shares"}, index_name="ETF"
+    )
+    assert added == ["GLD"]
+    assert present == ["SPY"]
+    # XLK was left out of this call but must not be removed.
+    assert "XLK" in dual_tracker.current_members("ETF")
+
+
+def test_index_refresh_does_not_touch_etfs(dual_tracker):
+    """A universe diff against Wikipedia must not see ETFs as departed members."""
+    _seed_and_register(dual_tracker)
+
+    diff = dual_tracker.refresh(_live("AAPL"), observed_date=date(2026, 3, 2))
+
+    assert "SPY" not in diff.removed
+    assert "XLK" not in diff.removed
+    assert dual_tracker.current_members("ETF") == ["SPY", "XLK"]
+
+
+def test_default_tracker_collects_only_its_index(tracker):
+    """Without collect_indices, behaviour is unchanged."""
+    assert tracker.collect_indices == ["SP500"]

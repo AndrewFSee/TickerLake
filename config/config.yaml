@@ -51,6 +51,103 @@ ohlcv:
   backfill_batch_size: 25
   backfill_throttle_seconds: 2.0
 
+etfs:
+  # ETFs are tracked for collection but are NOT index constituents. They live
+  # under index_name=ETF in the membership table, so every fetcher picks them up
+  # while members_on() and the point-in-time survivorship queries stay strictly
+  # S&P 500. Filing them under SP500 would make members_on() return ~560 names
+  # and quietly corrupt every survivorship-sensitive result.
+  #
+  # ETFs are also not perishable in the way constituents are: nothing is added
+  # or dropped by a committee, so this list only changes when you edit it. An
+  # ETF that closes has its interval closed like any delisted stock, and its
+  # history is retained.
+  enabled: true
+  index_name: ETF
+  # History start for ETF OHLCV backfill. Many predate 2010; the fetcher simply
+  # takes whatever the source returns from this date forward.
+  history_start: "2010-01-01"
+  symbols:
+    # --- Broad US equity: the market itself, plus breadth -------------------
+    SPY:  "SPDR S&P 500"
+    VOO:  "Vanguard S&P 500"
+    VTI:  "Vanguard Total Stock Market"
+    QQQ:  "Invesco Nasdaq 100"
+    IWM:  "iShares Russell 2000 (small cap)"
+    DIA:  "SPDR Dow Jones Industrial Average"
+    MDY:  "SPDR S&P MidCap 400"
+    # Equal-weight vs cap-weight is one of the cleanest free breadth signals:
+    # RSP/SPY diverging means the index is being carried by a few names.
+    RSP:  "Invesco S&P 500 Equal Weight"
+
+    # --- Style and factor exposure ------------------------------------------
+    VUG:  "Vanguard Growth"
+    VTV:  "Vanguard Value"
+    IWF:  "iShares Russell 1000 Growth"
+    IWD:  "iShares Russell 1000 Value"
+    MTUM: "iShares MSCI USA Momentum"
+    QUAL: "iShares MSCI USA Quality"
+    USMV: "iShares MSCI USA Min Volatility"
+    VLUE: "iShares MSCI USA Value"
+    SCHD: "Schwab US Dividend Equity"
+    VYM:  "Vanguard High Dividend Yield"
+    NOBL: "ProShares S&P 500 Dividend Aristocrats"
+
+    # --- The 11 GICS sectors (SPDR Select Sector) ---------------------------
+    XLK:  "Technology"
+    XLF:  "Financials"
+    XLE:  "Energy"
+    XLV:  "Health Care"
+    XLI:  "Industrials"
+    XLY:  "Consumer Discretionary"
+    XLP:  "Consumer Staples"
+    XLU:  "Utilities"
+    XLB:  "Materials"
+    XLRE: "Real Estate"
+    XLC:  "Communication Services"
+
+    # --- High-beta industry proxies that move on macro ----------------------
+    SMH:  "VanEck Semiconductors"
+    XBI:  "SPDR S&P Biotech"
+    KRE:  "SPDR S&P Regional Banking"
+    ITB:  "iShares US Home Construction"
+    XOP:  "SPDR S&P Oil & Gas Exploration"
+    XRT:  "SPDR S&P Retail"
+    IYT:  "iShares US Transportation"
+
+    # --- Fixed income: duration ladder, credit, inflation -------------------
+    TLT:  "iShares 20+ Year Treasury"
+    IEF:  "iShares 7-10 Year Treasury"
+    SHY:  "iShares 1-3 Year Treasury"
+    AGG:  "iShares Core US Aggregate Bond"
+    LQD:  "iShares Investment Grade Corporate"
+    HYG:  "iShares High Yield Corporate"
+    JNK:  "SPDR Bloomberg High Yield"
+    TIP:  "iShares TIPS Bond"
+
+    # --- Commodities --------------------------------------------------------
+    GLD:  "SPDR Gold Shares"
+    SLV:  "iShares Silver Trust"
+    USO:  "United States Oil Fund"
+    UNG:  "United States Natural Gas Fund"
+    DBC:  "Invesco DB Commodity Index"
+
+    # --- International ------------------------------------------------------
+    EFA:  "iShares MSCI EAFE (developed ex-US)"
+    EEM:  "iShares MSCI Emerging Markets"
+    VEA:  "Vanguard FTSE Developed Markets"
+    VWO:  "Vanguard FTSE Emerging Markets"
+    ACWI: "iShares MSCI ACWI (all country)"
+    FXI:  "iShares China Large-Cap"
+    EWJ:  "iShares MSCI Japan"
+
+    # --- Real estate and volatility -----------------------------------------
+    VNQ:  "Vanguard Real Estate"
+    IYR:  "iShares US Real Estate"
+    # VIX futures. Structurally decays, so use it as a signal, never as a hold.
+    VXX:  "iPath Series B S&P 500 VIX Short-Term Futures"
+
+
 intraday:
   # Intraday bars - the finest free granularity available, and it EXPIRES.
   # Yahoo retains roughly 30 days of 1-minute bars and then drops them for good,
