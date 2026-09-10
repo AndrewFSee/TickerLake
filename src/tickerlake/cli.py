@@ -230,6 +230,88 @@ def cmd_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bars(args: argparse.Namespace) -> int:
+    """Build information-driven bars (AFML ch. 2) from stored 1-minute bars.
+
+    Deliberately an on-demand export rather than a collected dataset: the
+    threshold is a modelling choice, and baking one into storage would freeze a
+    decision that belongs to whoever is building features. The 1-minute bars are
+    the durable artefact; these are derived from them.
+    """
+    import pandas as pd
+
+    from tickerlake.analytics.bars import build_bars, calibrate_threshold
+
+    config = _bootstrap(args)
+    symbols = _symbols(args)
+
+    with LakeQuery(config.data_root) as q:
+        query = "SELECT symbol, datetime, date, open, high, low, close, volume FROM intraday_bars WHERE interval = ?"
+        params: list = [args.interval]
+        if symbols:
+            query += f" AND symbol IN ({','.join('?' * len(symbols))})"
+            params.extend(symbols)
+        minute_bars = q.sql(query, params)
+
+    if minute_bars.empty:
+        print(
+            f"No {args.interval} bars stored. Run: tickerlake run --stages intraday",
+            file=sys.stderr,
+        )
+        return 1
+
+    frames = []
+    for _symbol, group in minute_bars.groupby("symbol", sort=True):
+        if args.kind != "time":
+            report = calibrate_threshold(group, args.kind, args.target)
+            print(report.summary())
+            bars = build_bars(group, args.kind, threshold=report.threshold)
+        else:
+            bars = build_bars(group, "time", threshold=args.minutes)
+        frames.append(bars)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if out.empty:
+        print("No bars produced.", file=sys.stderr)
+        return 1
+
+    complete = out[~out["incomplete"]]
+    print(
+        f"\n{len(out):,} {args.kind} bars across {out['symbol'].nunique()} symbol(s), "
+        f"{out['session'].nunique()} session(s)"
+    )
+    if args.kind != "time" and not complete.empty:
+        print(
+            f"quantisation: mean overshoot {complete['overshoot_pct'].mean():.1f}%, "
+            f"max {complete['overshoot_pct'].max():.1f}%, "
+            f"{int((complete['minutes'] == 1).sum())} bar(s) filled by a single minute"
+        )
+
+    if args.output:
+        path = Path(args.output)
+        if path.suffix == ".parquet":
+            out.to_parquet(path, index=False)
+        else:
+            out.to_csv(path, index=False)
+        print(f"written to {path}")
+    else:
+        cols = [
+            "symbol",
+            "bar_start",
+            "bar_end",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "vwap",
+            "minutes",
+            "overshoot_pct",
+        ]
+        print(out[cols].head(args.limit).to_string(index=False))
+    return 0
+
+
 def cmd_compact(args: argparse.Namespace) -> int:
     """Merge small daily files into consolidated partitions."""
     from tickerlake.pipeline.compact import Compactor
@@ -399,6 +481,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", help="write results to .csv or .parquet instead of stdout")
     p.add_argument("--limit", type=int, default=25, help="rows to print (default 25)")
     p.set_defaults(func=cmd_query)
+
+    p = sub.add_parser("bars", help="build volume/dollar/time bars from stored 1m bars (AFML ch.2)")
+    p.add_argument("--kind", choices=["dollar", "volume", "time"], default="dollar")
+    p.add_argument("--target", type=int, default=50, help="target bars per day (dollar/volume)")
+    p.add_argument("--minutes", type=int, default=5, help="bar width when --kind time")
+    p.add_argument("--interval", default="1m", help="source interval (default 1m)")
+    p.add_argument("--symbols", help="comma-separated symbols")
+    p.add_argument("--output", help="write to .csv or .parquet instead of stdout")
+    p.add_argument("--limit", type=int, default=15, help="rows to print (default 15)")
+    p.set_defaults(func=cmd_bars)
 
     p = sub.add_parser("compact", help="merge small daily files into consolidated partitions")
     p.add_argument("--datasets", help="comma-separated datasets, default from config")

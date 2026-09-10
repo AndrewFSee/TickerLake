@@ -42,7 +42,7 @@ SOURCE = "yfinance"
 # Yahoo's hard per-request span for each interval, measured empirically.
 # Exceeding these returns an error rather than a truncated result.
 MAX_REQUEST_DAYS = {
-    "1m": 7,      # documented as 8; 7 keeps a safety margin
+    "1m": 7,  # documented as 8; 7 keeps a safety margin
     "2m": 59,
     "5m": 59,
     "15m": 59,
@@ -100,7 +100,11 @@ class YFinanceIntradayFetcher(BaseFetcher):
 
         self.log.info(
             "fetching %s bars for %d symbols, %s to %s (batch=%d)",
-            interval, len(symbols), start, run_date, batch_size,
+            interval,
+            len(symbols),
+            start,
+            run_date,
+            batch_size,
         )
 
         frames: list[pd.DataFrame] = []
@@ -132,7 +136,9 @@ class YFinanceIntradayFetcher(BaseFetcher):
                 returned = 0
             result.items_succeeded += returned
             result.items_skipped += len(batch) - returned
-            self.log.info("batch %d/%d: %d/%d symbols returned bars", n, len(batches), returned, len(batch))
+            self.log.info(
+                "batch %d/%d: %d/%d symbols returned bars", n, len(batches), returned, len(batch)
+            )
 
         if not frames:
             result.add_error(f"no {interval} bars returned for any symbol")

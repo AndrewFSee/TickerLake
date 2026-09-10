@@ -503,13 +503,80 @@ These are bars: no trade-level detail, no bid/ask, no trade conditions, no size
 beyond per-bar volume. Anything needing genuine order-flow microstructure needs a
 real tape.
 
-**Decision: we are not collecting ticks.** Alpaca's free IEX feed was considered
-and declined. At daily-to-hourly horizons 1-minute bars carry nearly all the
-signal IEX-sampled ticks would, without the distortion of a 2.5% sample - and a
-2.5% sample is actively misleading for anything volume-weighted (VWAP,
-participation rate, volume profile), because it is not a random 2.5%. Revisit
-only if a model turns up that genuinely needs order flow; at that point the
-honest options are Alpaca IEX with the bias understood, or a paid SIP feed.
+**Decision: not collecting ticks, for now.** Alpaca's free IEX feed was
+considered and declined, on the grounds that 1-minute bars carry most of the
+signal at daily-to-hourly horizons and a 2.5% single-exchange sample is
+misleading for volume-weighted features because it is not a random 2.5%.
+
+That reasoning holds for volume and dollar bars, which the measurements above
+confirm work well from minute data. It does **not** hold for AFML's imbalance
+bars, run bars, or ch. 19 microstructural features: those need a signed trade
+sequence, and no amount of bar aggregation recovers one. If that part of the
+book becomes the goal, tick data stops being optional and the honest options are
+Alpaca IEX with the sampling bias understood, or a paid SIP feed.
+
+---
+
+### Information-driven bars (AFML ch. 2)
+
+`tickerlake bars` builds volume, dollar, and time bars from the stored 1-minute
+series. What is reconstructable depends entirely on what the source carries:
+
+| AFML bar type | Requires | From 1m bars? |
+|---|---|---|
+| Time bars | clock | Yes |
+| **Volume bars** | cumulative shares | **Approximate** |
+| **Dollar bars** | cumulative traded value | **Approximate** |
+| Tick bars | trade count per period | No - yfinance publishes no trade count |
+| Imbalance bars (TIB/VIB/DIB) | signed trade *sequence* | No |
+| Run bars (TRB/VRB/DRB) | signed trade *sequence* | No |
+
+Imbalance and run bars rest on the tick rule -- `b_t = b_{t-1} if dp=0 else
+sign(dp)` applied **per trade**. A minute bar exposes only the net change across
+~60 seconds, so the sequence inside it is unrecoverable. The same blocker rules
+out ch. 19's microstructural features (Kyle's lambda, VPIN, Roll measure).
+`signed_volume_proxy()` computes a bar-level approximation under a name that
+does not pretend to be VIB/DIB.
+
+**The approximation still delivers the benefit.** AFML's central claim is that
+information-driven bars have better statistical properties than time bars.
+Measured on real AAPL minute data, matched bar counts:
+
+| Bar type | n | Serial corr | Excess kurtosis | Jarque-Bera | Bar-size CV |
+|---|---|---|---|---|---|
+| time | 132 | -0.1120 | 16.05 | 1534.2 | 0.811 |
+| volume | 134 | -0.0206 | 3.16 | 55.5 | 0.179 |
+| **dollar** | 134 | **-0.0215** | **2.80** | **43.6** | **0.174** |
+
+Dollar bars cut serial correlation ~5x, excess kurtosis ~5.7x, and the
+Jarque-Bera statistic ~35x. Lower is better on all four.
+
+**The cost is quantisation at the open.** A bar can only close on a minute
+boundary, and intraday volume is ~19x heavier at the open than at midday, so a
+threshold sized for 50 bars/day is exceeded by the opening minute alone:
+
+| Target bars/day | AAPL threshold | Typical overshoot | At the open |
+|---|---|---|---|
+| 20 | $764M | 2.1% | 40% |
+| 50 | $305M | 5.2% | 101% |
+| 100 | $153M | 10.4% | 201% |
+
+In practice at 30 bars/day: mean overshoot 9.4%, and 5 of 134 bars were filled
+by a single minute -- all at the open. `calibrate_threshold()` warns when a
+threshold is smaller than one opening minute, and every bar carries
+`overshoot_pct` so the error is inspectable per row rather than assumed away.
+**Prefer 20-30 bars/day over AFML's suggested ~50** when working from minute
+data; the quantisation is what forces that, not the theory.
+
+```powershell
+tickerlake bars --kind dollar --target 30 --symbols AAPL,NVDA
+tickerlake bars --kind dollar --target 30 --output bars.parquet
+```
+
+Bars are an on-demand export, not a collected dataset: the threshold is a
+modelling choice, and freezing one into storage would fix a decision that
+belongs to whoever builds the features. The 1-minute bars are the durable
+artefact.
 
 ---
 

@@ -133,7 +133,9 @@ class DatasetPaths:
 
     def intraday_partition(self, interval: str, day: date) -> Path:
         return (
-            self.root / INTRADAY_BARS / f"interval={safe_symbol(interval).lower()}"
+            self.root
+            / INTRADAY_BARS
+            / f"interval={safe_symbol(interval).lower()}"
             / f"date={day.isoformat()}"
         )
 
