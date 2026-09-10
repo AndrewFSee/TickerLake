@@ -731,6 +731,45 @@ available nowhere else in the lake.
 Snapshots land on the same 1-minute grid as `intraday_bars`, so they join
 directly on `(symbol, datetime)`.
 
+#### Verified on a real day
+
+One full reconstruction of 2026-09-09 for AAPL/MSFT/NVDA/SPY:
+
+| | |
+|---|---|
+| Runtime | **23.4 min** end to end |
+| Processed | 395M messages, 11.5 GB streamed |
+| Output | **1,560 snapshots = 390 minutes x 4 symbols**, full session |
+| Size | **176 KB** -> ~22 MB/day extrapolated to all 503 members |
+
+**The time-weighting decision paid off, measurably.** Comparing each minute's
+boundary snapshot against its time-weighted average:
+
+| Symbol | Mean abs. gap | Max gap | Minutes where the point sample is off by >50% |
+|---|---|---|---|
+| AAPL | $0.197 | $5.17 | **69.0%** |
+| MSFT | $0.513 | $25.57 | **50.3%** |
+| SPY | $0.030 | $0.33 | 34.9% |
+| NVDA | $0.023 | $2.51 | 14.9% |
+
+For AAPL, a naive boundary snapshot misrepresents the minute's spread by more
+than half **69% of the time**. The opening minute is the clearest case: the
+09:30 boundary showed a $7.97 spread while the time-weighted average across
+that minute was $2.80.
+
+**The 2.5% caveat, measured rather than quoted.** Joining IEX trade volume
+against the consolidated volume already in `ohlcv`:
+
+| Symbol | IEX shares | Consolidated | IEX share of tape |
+|---|---|---|---|
+| AAPL | 2,458,440 | 65,371,600 | **3.76%** |
+| NVDA | 2,176,742 | 82,737,000 | **2.63%** |
+| MSFT | 327,680 | 12,875,900 | **2.54%** |
+
+Coverage is also very uneven per symbol: NVDA generated 2.86M book updates that
+day against MSFT's 108K, a 26x difference. Depth features should be read as
+describing IEX's book, and their reliability varies by name.
+
 **Practical verdict:** selective pulls are clearly worthwhile and are what is
 built. Nightly collection is technically viable but was declined -- 345 GB/month
 and 45 min/night is a steep recurring price for depth describing 2.5% of the
