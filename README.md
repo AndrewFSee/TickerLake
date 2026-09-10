@@ -664,8 +664,44 @@ Three things make it impractical as a daily collection stage:
 Plus the binary IEX-TP/DEEP protocol needs a parser; the available libraries are
 lightly maintained.
 
-**Practical verdict:** viable for *selective* research -- pulling specific days
-for specific symbols on demand -- and not viable as a nightly job on local disk.
+#### Consolidating L2 to 1-minute snapshots
+
+The 3.16 TB/year figure is the cost of storing the *raw message stream*. It is
+not the cost of storing what you would actually use. Downsampling to 1-minute
+book snapshots -- matching the `intraday_bars` grid -- changes the storage
+arithmetic by roughly 300x, though it changes bandwidth not at all.
+
+Feasibility was verified end to end against a real DEEP file, not assumed:
+
+| Step | Measured |
+|---|---|
+| Format | **pcapng**, not classic pcap (magic `0x0a0d0d0a`) |
+| Download | 11.5 GB compressed, **~20 min** at 9.5 MB/s |
+| Decompressed | ~48 GB streamed (4.2x ratio) |
+| Parse | **~23 min** at 0.29M msg/s in pure Python (overlappable with download) |
+| Volume | ~389M messages/day, ~372M price-level updates |
+| Symbols | 10,967 distinct |
+
+Book reconstruction from `Price Level Update` messages (`0x38` buy / `0x35`
+sell) was confirmed working -- decoded books for SPY, AAPL and MSFT came out
+with sane bids, asks and sizes.
+
+**Storage after consolidation:** 503 symbols x 390 minutes = ~196k snapshots/day.
+With top-10 levels per side plus derived features that is roughly **20-40 MB/day
+(~5-10 GB/year)**, against 3.16 TB/year raw.
+
+**What does not improve: bandwidth.** Consolidation happens *after* the download,
+so the full 11.5 GB still crosses the wire every day -- about **345 GB/month**.
+That, plus ~45 minutes of nightly runtime, is the real price.
+
+**And the representativeness caveat is unchanged.** IEX is ~2.5% of consolidated
+volume. A reconstructed IEX book is one venue's resting liquidity, not the NBBO,
+and depth or imbalance features built from it should be read that way.
+
+**Practical verdict:** *selective* research pulls are clearly worthwhile. Nightly
+collection is now technically viable rather than impossible -- the question is
+whether 345 GB/month and 45 min/night buys enough, given the data describes 2.5%
+of the market.
 
 **Crypto L2 is free and complete.** Verified working: Coinbase
 (`api.exchange.coinbase.com/products/{pair}/book?level=2`) returns a full 1.1 MB
