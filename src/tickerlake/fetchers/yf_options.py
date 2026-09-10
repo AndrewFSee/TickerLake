@@ -80,6 +80,9 @@ class YFinanceOptionsFetcher(BaseFetcher):
         super().__init__(*args, **kwargs)
         #: Cap the symbol count. Used to smoke-test on 10 before committing to 500.
         self.limit = limit
+        #: Running bid-coverage tally, used to detect off-hours snapshots.
+        self._bid_total = 0
+        self._bid_present = 0
 
     # ------------------------------------------------------------------ main
 
@@ -324,7 +327,23 @@ class YFinanceOptionsFetcher(BaseFetcher):
             self.paths.options_symbol_file(run_date, symbol),
             mode="overwrite",
         )
-        return {"rows": write.rows_written, "expirations": len(wanted)}
+
+        # Bid coverage is the single best signal that a snapshot was taken in a
+        # usable window. Yahoo serves the full strike ladder around the clock but
+        # only populates bids while quotes are live, so an off-hours snapshot
+        # looks complete -- right row count, right strikes, plausible last prices
+        # -- while carrying almost no tradeable quotes. Implied volatility is
+        # then unrecoverable from it, and nothing else in the row says why.
+        bids = pd.to_numeric(out["bid"], errors="coerce")
+        with_bid = int((bids > 0).sum())
+        self._bid_total += len(out)
+        self._bid_present += with_bid
+
+        return {
+            "rows": write.rows_written,
+            "expirations": len(wanted),
+            "bid_coverage": round(with_bid / max(len(out), 1), 3),
+        }
 
     def _normalize(
         self,
@@ -391,6 +410,31 @@ class YFinanceOptionsFetcher(BaseFetcher):
         result.files_written = len(files)
         result.bytes_written = sum(f.stat().st_size for f in files)
         result.rows_written = checkpoint.rows_written()
+
+        coverage = self._bid_present / self._bid_total if self._bid_total else None
+        if coverage is not None:
+            result.details["bid_coverage"] = round(coverage, 3)
+            floor = float(self.cfg("min_bid_coverage", 0.25))
+            if coverage < floor:
+                result.add_warning(
+                    f"only {coverage:.1%} of contracts carry a bid (expected >{floor:.0%}). "
+                    "Yahoo populates bid/ask only while quotes are live, so this snapshot was "
+                    "almost certainly taken outside market hours. The strikes and last prices "
+                    "are still stored, but implied volatility cannot be solved from it."
+                )
+                self.log.warning(
+                    "LOW BID COVERAGE %.1f%% for %s - snapshot likely taken outside "
+                    "market hours (equity options quote 09:30-16:00 ET)",
+                    coverage * 100,
+                    run_date,
+                )
+            else:
+                self.log.info(
+                    "bid coverage %.1f%% (%d/%d contracts)",
+                    coverage * 100,
+                    self._bid_present,
+                    self._bid_total,
+                )
 
         result.details.update(
             {

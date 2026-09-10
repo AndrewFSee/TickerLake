@@ -83,6 +83,13 @@ options:
   checkpoint_every: 10
   # Skip symbols with no listed options rather than treating it as a failure.
   skip_symbols_without_options: true
+  # Fraction of contracts that must carry a non-zero bid for the snapshot to be
+  # considered usable. Yahoo serves the strike ladder around the clock but only
+  # populates bid/ask while quotes are live, so a pre-open or overnight run
+  # yields a complete-looking snapshot with ~8% bid coverage and no solvable
+  # implied volatility. Below this the run warns loudly instead of failing --
+  # the data is still worth keeping, it just cannot support IV.
+  min_bid_coverage: 0.25
 
 sec_edgar:
   enabled: true
@@ -146,14 +153,13 @@ gdelt:
   # GDELT rejects aggressive querying; it is a free public service.
   lookback_days: 1
   max_records_per_query: 250
-  # Company queries rotate deterministically by day, so coverage is even over
-  # time without hammering a free service with 500 queries a night.
-  symbols_per_run: 40
-  # GDELT returns HTTP 429 for minutes at a time regardless of pacing. Keep
-  # retries low and trip a circuit breaker rather than letting 44 queries each
-  # burn their retry budget and stall the run for an hour.
-  max_attempts: 2
-  circuit_breaker_failures: 5
+  # Number of 15-minute GKG bulk files to pull per run, newest first. Each is
+  # ~6 MB zipped and holds ~1,400 articles worldwide. 16 files = the most recent
+  # 4 hours, which for an after-close run covers the US trading afternoon.
+  # A full day would be 96 files and ~600 MB.
+  max_files: 16
+  max_attempts: 3
+  requests_per_second: 2.0
   # Query the tracked universe by company name, plus these macro themes.
   themes:
     - ECON_INTERESTRATE
@@ -172,14 +178,46 @@ finnhub:
   crosscheck_sample_size: 50
   news_lookback_days: 1
 
+finra:
+  # Daily short sale volume. Free, no key, one flat file per trading day.
+  # Note this is short *volume* (intraday flow, includes market-maker hedging),
+  # not short *interest* (accumulated positioning, reported bi-monthly).
+  enabled: true
+  requests_per_second: 2.0
+  lookback_days: 5
+  force_refetch: false
+
+earnings:
+  # Earnings surprises, forward calendar, and analyst recommendations.
+  # All on Finnhub's free tier, so no Alpha Vantage key is needed.
+  enabled: true
+  requests_per_second: 1.0
+  fetch_calendar: true
+  fetch_surprises: true
+  fetch_recommendations: true
+  calendar_days_ahead: 45
+  surprise_symbols_per_run: 60
+  recommendation_symbols_per_run: 60
+
+options_analytics:
+  # Derived: solves implied volatility and Greeks from the stored chains using
+  # the FRED curve for discounting. A transform, not a fetch - safe to re-run
+  # over any past snapshot, which is why it is stored separately from the raw
+  # chains rather than folded into them.
+  enabled: true
+
 pipeline:
-  # Order matters: universe must refresh before anything that iterates symbols.
+  # Order matters: universe must refresh before anything that iterates symbols,
+  # and options_analytics must follow options since it reads what options wrote.
   stages:
     - universe
     - ohlcv
     - options
+    - options_analytics
     - sec_edgar
     - fred
+    - finra
+    - earnings
     - gdelt
     - finnhub
   # A stage failing does not stop later stages; it is recorded in the run summary.
@@ -187,6 +225,9 @@ pipeline:
   # Per-stage wall-clock cap. null = no cap.
   stage_timeout_minutes:
     options: 360
+    options_analytics: 60
+    finra: 20
+    earnings: 30
     ohlcv: 60
     sec_edgar: 120
     fred: 20
@@ -205,4 +246,4 @@ compaction:
   # Merge daily delta files older than this into consolidated partition files.
   min_age_days: 2
   # Datasets to compact.
-  datasets: [ohlcv, options_chains, news_events, filings_text]
+  datasets: [ohlcv, options_chains, options_greeks, news_events, filings_text, short_volume]

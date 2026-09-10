@@ -42,6 +42,10 @@ FILINGS_TEXT = "filings_text"
 FILINGS_FACTS = "filings_facts"
 MACRO_SERIES = "macro_series"
 NEWS_EVENTS = "news_events"
+OPTIONS_GREEKS = "options_greeks"
+OPTIONS_FLOW = "options_flow"
+SHORT_VOLUME = "short_volume"
+EARNINGS = "earnings"
 MEMBERSHIP = "membership"
 UNIVERSE_HISTORY = "universe_history"
 QUALITY = "quality"
@@ -49,6 +53,10 @@ QUALITY = "quality"
 DATASETS = [
     OHLCV,
     OPTIONS_CHAINS,
+    OPTIONS_GREEKS,
+    OPTIONS_FLOW,
+    SHORT_VOLUME,
+    EARNINGS,
     FILINGS_TEXT,
     FILINGS_FACTS,
     MACRO_SERIES,
@@ -120,6 +128,31 @@ class DatasetPaths:
         part = self.options_partition(snapshot)
         part.mkdir(parents=True, exist_ok=True)
         return part / "data.parquet"
+
+    def options_greeks_file(self, snapshot: date) -> Path:
+        part = self.root / OPTIONS_GREEKS / f"snapshot_date={snapshot.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def options_flow_file(self, snapshot: date) -> Path:
+        d = self.root / OPTIONS_FLOW
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"_daily_{snapshot.isoformat()}.parquet"
+
+    # ---------------------------------------------------------- short volume
+
+    def short_volume_file(self, day: date) -> Path:
+        part = self.root / SHORT_VOLUME / f"year={day.year:04d}"
+        part.mkdir(parents=True, exist_ok=True)
+        return part / f"_daily_{day.isoformat()}.parquet"
+
+    # -------------------------------------------------------------- earnings
+
+    def earnings_file(self, kind: str) -> Path:
+        """One file per kind: surprises, calendar, recommendations."""
+        d = self.root / EARNINGS
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{safe_symbol(kind).lower()}.parquet"
 
     # ----------------------------------------------------------- membership
 

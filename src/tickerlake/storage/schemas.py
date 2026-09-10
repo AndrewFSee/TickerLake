@@ -66,6 +66,103 @@ OPTIONS_SCHEMA = pa.schema(
     ]
 )
 
+OPTIONS_GREEKS_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("expiration", pa.date32(), nullable=False),
+        pa.field("option_type", pa.string(), nullable=False),
+        pa.field("strike", pa.float64(), nullable=False),
+        pa.field("contract_symbol", pa.string()),
+        pa.field("dte", pa.int32()),
+        pa.field("underlying_price", pa.float64()),
+        pa.field("mid_price", pa.float64()),
+        pa.field("intrinsic_value", pa.float64()),
+        pa.field("time_value", pa.float64()),
+        # Our own solved IV. NULL wherever the quote could not support one --
+        # that absence is the point, versus a vendor field that always has a value.
+        pa.field("iv", pa.float64()),
+        pa.field("iv_uncertainty", pa.float64()),
+        # Yahoo's field, retained for comparison rather than for use.
+        pa.field("iv_vendor", pa.float64()),
+        pa.field("delta", pa.float64()),
+        pa.field("gamma", pa.float64()),
+        pa.field("vega", pa.float64()),
+        pa.field("theta", pa.float64()),
+        pa.field("rho", pa.float64()),
+        pa.field("moneyness", pa.float64()),
+        pa.field("log_moneyness", pa.float64()),
+        pa.field("risk_free_rate", pa.float64()),
+        pa.field("dividend_yield", pa.float64()),
+        pa.field("quality_flags", pa.string()),
+        pa.field("iv_usable", pa.bool_()),
+        pa.field("volume", pa.int64()),
+        pa.field("open_interest", pa.int64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+OPTIONS_FLOW_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("call_volume", pa.int64()),
+        pa.field("put_volume", pa.int64()),
+        pa.field("put_call_volume_ratio", pa.float64()),
+        pa.field("call_open_interest", pa.int64()),
+        pa.field("put_open_interest", pa.int64()),
+        pa.field("put_call_oi_ratio", pa.float64()),
+        pa.field("atm_iv_30d", pa.float64()),
+        pa.field("skew_25d", pa.float64()),
+        pa.field("contracts", pa.int32()),
+        pa.field("expirations", pa.int32()),
+        pa.field("underlying_price", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+SHORT_VOLUME_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("date", pa.date32(), nullable=False),
+        pa.field("short_volume", pa.float64()),
+        pa.field("short_exempt_volume", pa.float64()),
+        pa.field("total_volume", pa.float64()),
+        # The headline feature: short volume as a share of total reported volume.
+        pa.field("short_volume_ratio", pa.float64()),
+        pa.field("market", pa.string()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+EARNINGS_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("record_type", pa.string(), nullable=False),  # surprise|calendar|recommendation
+        pa.field("period", pa.date32(), nullable=False),
+        pa.field("fiscal_year", pa.int32()),
+        pa.field("fiscal_quarter", pa.int32()),
+        pa.field("eps_estimate", pa.float64()),
+        pa.field("eps_actual", pa.float64()),
+        pa.field("eps_surprise", pa.float64()),
+        pa.field("eps_surprise_pct", pa.float64()),
+        pa.field("revenue_estimate", pa.float64()),
+        pa.field("revenue_actual", pa.float64()),
+        pa.field("report_hour", pa.string()),
+        pa.field("strong_buy", pa.int32()),
+        pa.field("buy", pa.int32()),
+        pa.field("hold", pa.int32()),
+        pa.field("sell", pa.int32()),
+        pa.field("strong_sell", pa.int32()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+
 MEMBERSHIP_SCHEMA = pa.schema(
     [
         pa.field("symbol", pa.string(), nullable=False),
@@ -198,6 +295,10 @@ QUALITY_SCHEMA = pa.schema(
 SCHEMAS: dict[str, pa.Schema] = {
     P.OHLCV: OHLCV_SCHEMA,
     P.OPTIONS_CHAINS: OPTIONS_SCHEMA,
+    P.OPTIONS_GREEKS: OPTIONS_GREEKS_SCHEMA,
+    P.OPTIONS_FLOW: OPTIONS_FLOW_SCHEMA,
+    P.SHORT_VOLUME: SHORT_VOLUME_SCHEMA,
+    P.EARNINGS: EARNINGS_SCHEMA,
     P.MEMBERSHIP: MEMBERSHIP_SCHEMA,
     P.UNIVERSE_HISTORY: UNIVERSE_HISTORY_SCHEMA,
     P.FILINGS_TEXT: FILINGS_TEXT_SCHEMA,
@@ -274,6 +375,28 @@ RULES: dict[str, ValidationRule] = {
         min_rows=100,
         non_null=("symbol", "index_name", "start_date", "source"),
         unique_on=("symbol", "index_name", "start_date"),
+    ),
+    P.OPTIONS_GREEKS: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "snapshot_date", "expiration", "option_type", "strike"),
+        unique_on=("symbol", "expiration", "option_type", "strike"),
+        positive=("strike",),
+    ),
+    P.OPTIONS_FLOW: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "snapshot_date"),
+        unique_on=("symbol", "snapshot_date"),
+    ),
+    P.SHORT_VOLUME: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "date"),
+        unique_on=("symbol", "date", "market"),
+        non_negative=("short_volume", "total_volume"),
+    ),
+    P.EARNINGS: ValidationRule(
+        min_rows=0,
+        non_null=("symbol", "record_type", "period"),
+        unique_on=("symbol", "record_type", "period"),
     ),
     P.UNIVERSE_HISTORY: ValidationRule(
         min_rows=1,

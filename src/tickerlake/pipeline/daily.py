@@ -24,7 +24,9 @@ from typing import Any
 
 from tickerlake.config import Config
 from tickerlake.fetchers.base import FetchResult
+from tickerlake.fetchers.earnings import EarningsFetcher
 from tickerlake.fetchers.finnhub import FinnhubFetcher
+from tickerlake.fetchers.finra import FinraShortVolumeFetcher
 from tickerlake.fetchers.fred import FredFetcher
 from tickerlake.fetchers.gdelt import GdeltFetcher
 from tickerlake.fetchers.sec_edgar import SECEdgarFetcher
@@ -44,6 +46,8 @@ FETCHERS = {
     "fred": FredFetcher,
     "gdelt": GdeltFetcher,
     "finnhub": FinnhubFetcher,
+    "finra": FinraShortVolumeFetcher,
+    "earnings": EarningsFetcher,
 }
 
 
@@ -155,6 +159,9 @@ class DailyPipeline:
                 if stage == "universe":
                     summary.universe_diff = self._universe_stage(run_date, summary)
                     continue
+                if stage == "options_analytics":
+                    self._analytics_stage(run_date, summary)
+                    continue
                 self._fetcher_stage(stage, run_date, summary)
         except KeyboardInterrupt:
             summary.fatal_error = "interrupted by user"
@@ -207,6 +214,41 @@ class DailyPipeline:
             result.add_error(f"{type(exc).__name__}: {exc}")
             summary.stages.append(result)
             return None
+
+    def _analytics_stage(self, run_date: date, summary: RunSummary) -> None:
+        """Derive IV, Greeks, and flow ratios from the chains just collected.
+
+        A transform rather than a fetch: it reads only what is already stored, so
+        it can be re-run at any time against any past snapshot without touching
+        a network.
+        """
+        result = FetchResult(stage="options_analytics", dataset=P.OPTIONS_GREEKS)
+        if not self.config.get("options_analytics.enabled", True):
+            result.skipped = True
+            result.skip_reason = "disabled in config"
+            summary.stages.append(result)
+            return
+
+        started = time.monotonic()
+        try:
+            from tickerlake.analytics.options_analytics import OptionsAnalytics
+
+            stats = OptionsAnalytics(self.paths.root, self.writer).run(run_date)
+            result.rows_written = stats.get("rows", 0)
+            result.details.update(stats)
+            if stats.get("contracts") and stats.get("iv_solved_pct", 0) < 20:
+                result.add_warning(
+                    f"implied volatility solved for only {stats['iv_solved_pct']}% of contracts; "
+                    "the underlying snapshot was probably taken outside market hours"
+                )
+        except Exception as exc:
+            result.add_error(f"{type(exc).__name__}: {exc}")
+            log.error("options analytics failed: %s", exc)
+            log.debug("traceback:\n%s", traceback.format_exc())
+        finally:
+            result.duration_seconds = time.monotonic() - started
+        summary.stages.append(result)
+        log.info("=== %s ===", result.summary_line())
 
     def _fetcher_stage(self, stage: str, run_date: date, summary: RunSummary) -> None:
         fetcher_cls = FETCHERS.get(stage)

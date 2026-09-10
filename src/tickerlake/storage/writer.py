@@ -145,6 +145,10 @@ class ParquetWriter:
         return {
             P.OHLCV: ["symbol", "date"],
             P.OPTIONS_CHAINS: ["symbol", "expiration", "option_type", "strike"],
+            P.OPTIONS_GREEKS: ["symbol", "expiration", "option_type", "strike"],
+            P.OPTIONS_FLOW: ["symbol"],
+            P.SHORT_VOLUME: ["symbol", "date"],
+            P.EARNINGS: ["symbol", "period"],
             P.MEMBERSHIP: ["symbol", "start_date"],
             P.UNIVERSE_HISTORY: ["observed_date", "symbol"],
             P.FILINGS_TEXT: ["filing_date", "cik"],

@@ -84,9 +84,9 @@ Use the survivorship-safe query entry points:
 from tickerlake.storage.query import LakeQuery
 
 with LakeQuery("data") as q:
-    q.members_on("2015-06-30")           # who was actually in the index that day
-    q.pit_ohlcv("2015-01-01", "2020-12-31")   # panel filtered per-row by membership
-    q.ohlcv(symbols=["AAL"])             # raw table: includes delisted names on purpose
+    q.members_on("2015-06-30")  # who was actually in the index that day
+    q.pit_ohlcv("2015-01-01", "2020-12-31")  # panel filtered per-row by membership
+    q.ohlcv(symbols=["AAL"])  # raw table: includes delisted names on purpose
 ```
 
 `pit_ohlcv` joins each row to the membership interval covering **that row's own
@@ -202,7 +202,10 @@ Benchmarked on this machine against the live APIs:
 | SEC EDGAR daily | 60 filings + 120 XBRL refreshes | 2.7 min | 3,039,680 rows / 15.5 MB |
 | FRED | 31 series, 2010-present | 28 s | 65,325 rows / 0.5 MB |
 | Finnhub | 40 news + 50 price cross-checks | 1.5 min | 251 rows, 50/50 agree |
-| GDELT (while 429ing) | circuit breaker trip | 1.5 min | 0 rows, run continues |
+| Options analytics | 14,201 contracts -> IV + Greeks | 2.6 s | 5,441 contracts/sec |
+| FINRA short volume | 2 days, 632 symbols each | 2.4 s | 1,263 rows |
+| Earnings (Finnhub) | calendar + 60 symbols | 2.1 min | 641 rows |
+| GDELT (bulk feed) | 16 GKG files | 26 s | 3,947 articles, 0 failures |
 
 A full daily run with all stages enabled lands at roughly **2 hours**, dominated
 by the options snapshot.
@@ -369,10 +372,78 @@ class AlpacaFetcher(BaseFetcher):
     requires_secret = "alpaca_api_key"
 
     def collect(self, run_date: date, result: FetchResult) -> None:
-        df = ...                                  # fetch
+        df = ...  # fetch
         write = self.writer.write(df, self.dataset, path, mode="merge")
-        result.record_write(write)                # validate + write happen inside
+        result.record_write(write)  # validate + write happen inside
 ```
+
+---
+
+## Implied volatility and Greeks
+
+Yahoo's `impliedVolatility` field is unusable on illiquid contracts: a single
+snapshot contains 0.00001 and 20.8 side by side. That is not a Yahoo defect -
+Alpha Vantage reports 4.21 on comparable deep-ITM contracts. When a contract has
+a zero bid or trades below intrinsic value, there is no well-defined implied
+volatility, and every vendor emits a number anyway.
+
+So `options_analytics` solves its own, entirely from data already in the lake:
+spot from the snapshot itself, the risk-free rate interpolated from the FRED
+curve at each contract's own maturity, and dividend yield from stored OHLCV.
+Black-Scholes-Merton, solved with Brent's method rather than Newton-Raphson -
+vega collapses toward zero on the wings and Newton divides by it.
+
+The point is not a better number; it is **a verdict per contract**. Every row
+carries `quality_flags` saying why a value is or is not trustworthy:
+
+| Flag | Meaning |
+|---|---|
+| `zero_bid` | No bid: the mid is fictional |
+| `crossed_market` | bid >= ask, stale or erroneous quote |
+| `wide_spread` | Spread wider than 50% of mid |
+| `below_intrinsic` | No time value left to solve against |
+| `unidentifiable` | Vega ~ 0: any sigma reproduces the quote |
+| `implausible_iv` | Solved above 300%, effectively always an American early-exercise artefact |
+| `deep_itm` | Early-exercise premium likely material |
+
+Measured against the real chains:
+
+- **Correlation with Yahoo's IV on healthy contracts: 0.952**, median absolute
+  difference 3.8 vol points - the implementation agrees where agreement is
+  meaningful.
+- On contracts we gate, Yahoo's field spans **0.0 to 20.8**, with 818 values
+  under 1% vol and 167 over 300%. None survive the gate.
+- Greeks match finite differences to 1e-9; put-call parity holds to 1e-15.
+
+Two things that only became visible by computing it ourselves:
+
+**Snapshot timing decides everything.** An early run showed a 4.1% solve rate.
+The cause was not the model: that snapshot was taken at 09:14 ET, before the
+09:30 open, and Yahoo serves the full strike ladder around the clock while
+populating bid/ask only during market hours. Bid coverage was 8.6%. Re-run
+mid-session, the same 8 symbols gave **87.5% bid coverage and a 64.4% solve
+rate**. The options fetcher now measures bid coverage on every run and warns
+below `min_bid_coverage`, because an off-hours snapshot looks complete - right
+row count, right strikes, plausible last prices - while being useless for
+volatility.
+
+**Delta is not a moneyness proxy.** The first flow-ratio implementation picked
+ATM contracts by `|delta|` in [0.45, 0.55]. But delta is computed *from* the
+solved IV, so a deep-ITM put sitting at 470% IV has its delta dragged toward 0.5
+and passes as at-the-money - which pushed AAPL's reported 8-day ATM IV to 140%
+against ~27% at every neighbouring tenor. ATM and the skew wings now use
+log-moneyness, which depends only on spot and strike. The resulting term
+structure is textbook: 55% at 1DTE decaying to a flat 25.4%.
+
+```sql
+-- Only contracts whose quote can actually support a volatility
+SELECT symbol, expiration, strike, iv, delta, vega, iv_uncertainty
+FROM options_greeks
+WHERE iv_usable AND ABS(log_moneyness) < 0.05;
+```
+
+`options_flow` holds the per-symbol daily summary: put/call volume and open
+interest ratios, 30-day ATM IV, and 25-delta skew.
 
 ---
 
@@ -400,9 +471,26 @@ Ordered by value-per-effort for ML features. All free unless noted.
 7. **SEC 13F holdings** — quarterly institutional positions. Heavy to parse, but
    ownership-change features are hard to get free anywhere else.
 
-**Already wired up as of the latest run:** FRED now collects 31 series including
-inflation breakevens (`T5YIE`, `T10YIE`), the 10Y real yield (`DFII10`), core PCE,
-Fed balance sheet, initial claims, and two financial-conditions indices.
+**Now wired up:** FINRA short volume, Finnhub earnings (surprises, forward
+calendar, analyst recommendations), and FRED's 31 series including inflation
+breakevens, the 10Y real yield, core PCE, Fed balance sheet, initial claims and
+two financial-conditions indices. Put/call ratios are computed from our own
+chains in `options_flow`.
+
+**CBOE put/call ratios are no longer freely available.** The legacy
+`totalpc.csv` / `equitypc.csv` endpoints now return a JavaScript app, and the
+daily-statistics page exposes no API path and no embedded data - it is all
+behind their paid DataShop. `options_flow` computes the same statistic from our
+own chains instead, per symbol rather than as one market-wide number, at the
+cost of having no history before collection started.
+
+**Alpha Vantage turned out to be unnecessary.** Finnhub's free tier - already in
+use here - provides earnings surprises, a forward earnings calendar, analyst
+recommendations, and insider transactions. Alpha Vantage's free tier is 25
+requests/day, which cannot cover a 500-symbol universe under any rotation. Its
+`HISTORICAL_OPTIONS` endpoint does return IV and Greeks, but shows the same
+implausible values on illiquid contracts (4.21 where Yahoo shows 9.45), so it is
+not a fix for the IV problem either.
 
 **High value, free key required**
 
@@ -440,7 +528,8 @@ daily, and genuinely absent from everything else here).
   failures and skips the rest of that run's queries: without it, 44 queries each
   burning a retry budget stalled the pipeline for ~45 minutes to collect nothing.
   Treat GDELT coverage as genuinely best-effort.
-- **Yahoo implied volatility** is unreliable on illiquid contracts (see above).
+- **Yahoo implied volatility is not used.** See "Implied volatility and Greeks"
+  above - we solve our own and gate it per contract.
 - **623 of 848** tracked symbols map to a current SEC CIK; the remainder are
   delisted tickers absent from SEC's current ticker file. Their filing history is
   still reachable by CIK if you need it.
