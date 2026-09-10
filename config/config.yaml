@@ -1,0 +1,190 @@
+# TickerLake configuration.
+# Secrets live in .env, never here. Anything referencing an API key reads it from
+# the environment at runtime.
+
+storage:
+  # Root of the data lake. Relative paths resolve against the project root.
+  # Override with TICKERLAKE_DATA_ROOT.
+  root: data
+  # zstd gives ~2x better compression than snappy on options data at similar read speed.
+  compression: zstd
+  compression_level: 3
+  # Target size for compacted files. Below this, compaction merges more aggressively.
+  target_file_mb: 128
+
+universe:
+  index: SP500
+  # Primary seed: interval-shaped point-in-time membership, handles index re-entry.
+  membership_seed_url: "https://raw.githubusercontent.com/fja05680/sp500/master/sp500_ticker_start_end.csv"
+  # Verification source: dated full-constituent snapshots. Used by `verify-membership`
+  # to rebuild intervals independently and diff them against the seed.
+  membership_snapshot_url: "https://raw.githubusercontent.com/fja05680/sp500/master/S%26P%20500%20Historical%20Components%20%26%20Changes%20(Updated).csv"
+  # Live (today's) constituents. Updated same-day, unlike the GitHub mirror.
+  live_url: "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+  # Earliest membership interval to retain when seeding.
+  history_start: "2010-01-01"
+  # A tracked symbol that returns no data for this many consecutive runs is flagged
+  # as a suspected silent delisting. Flagged, never deleted.
+  silent_delist_threshold_runs: 5
+  # Stop requesting new data this many days after an official index removal.
+  # History is retained forever regardless.
+  post_removal_grace_days: 30
+
+ohlcv:
+  enabled: true
+  start_date: "2010-01-01"
+  interval: "1d"
+  # yfinance batches multiple symbols per HTTP request. 50 is well within limits
+  # and cuts the daily incremental pull to ~10 requests.
+  batch_size: 50
+  # Seconds between batched requests.
+  throttle_seconds: 1.0
+  auto_adjust: false      # keep raw OHLC; adjusted close stored as a separate column
+  # yfinance's bad-tick repair (needs scipy). Catches Yahoo's 100x price errors
+  # and missed split adjustments. Slower, but this is a permanent archive.
+  repair: true
+  # Days of history re-fetched each run. Yahoo revises recent bars, and a
+  # merge-on-write makes re-fetching them free of duplicates.
+  lookback_days: 5
+  include_actions: true   # dividends + splits, needed to build adjusted series later
+  # Backfill uses larger, slower batches since it is a one-time cost.
+  backfill_batch_size: 25
+  backfill_throttle_seconds: 2.0
+
+options:
+  enabled: true
+  # Every expiration: weeklies, 0DTE, monthlies, LEAPS. Filters below are all
+  # disabled by default - you can never recover a snapshot you didn't take.
+  max_dte: null           # e.g. 400 to cap at ~13 months
+  monthlies_only: false
+  include_weeklies: true
+  # Throttling. These are the knobs that decide whether Yahoo blocks you.
+  # Delay between individual expiration requests within a symbol.
+  throttle_seconds: 0.6
+  # Additional delay between symbols.
+  inter_symbol_seconds: 0.4
+  # Random jitter (+/- this fraction) applied to every delay, so the request
+  # pattern does not look metronomic.
+  jitter_pct: 0.35
+  # Adaptive backoff on HTTP 429 / YFRateLimitError.
+  rate_limit_backoff_seconds: 90
+  rate_limit_max_backoff_seconds: 900
+  # After a 429, multiply all delays by this and decay back toward baseline on success.
+  rate_limit_slowdown_factor: 2.0
+  # Per-symbol retry within the run.
+  max_retries_per_symbol: 3
+  # Symbols that failed are retried once more at the end of the run.
+  retry_failed_at_end: true
+  # Abort the whole run if this fraction of symbols fails - implies a systemic
+  # block rather than scattered bad tickers.
+  abort_failure_rate: 0.4
+  # Checkpoint every N symbols (checkpointing is also implicit: a symbol's output
+  # file existing means it is done).
+  checkpoint_every: 10
+  # Skip symbols with no listed options rather than treating it as a failure.
+  skip_symbols_without_options: true
+
+sec_edgar:
+  enabled: true
+  # SEC allows 10 req/s with a proper User-Agent. We stay well under.
+  requests_per_second: 5.0
+  form_types: ["10-K", "10-Q", "8-K"]
+  # Pull filings first submitted on or after this date.
+  start_date: "2010-01-01"
+  # Store the extracted primary document text alongside metadata.
+  store_text: true
+  max_text_chars: 2000000
+  # Also pull the XBRL companyfacts endpoint (structured fundamentals).
+  fetch_companyfacts: true
+
+fred:
+  enabled: true
+  requests_per_second: 5.0
+  # Curated macro set. Add any FRED series id here.
+  series:
+    - DGS10        # 10Y Treasury constant maturity
+    - DGS2         # 2Y Treasury
+    - DGS3MO       # 3M Treasury
+    - T10Y2Y       # 10Y-2Y spread (recession signal)
+    - T10Y3M       # 10Y-3M spread
+    - FEDFUNDS     # Effective fed funds rate
+    - CPIAUCSL     # CPI, all urban consumers
+    - CPILFESL     # Core CPI
+    - UNRATE       # Unemployment rate
+    - PAYEMS       # Nonfarm payrolls
+    - INDPRO       # Industrial production
+    - UMCSENT      # Consumer sentiment
+    - VIXCLS       # VIX close
+    - BAMLH0A0HYM2 # High-yield OAS (credit stress)
+    - DTWEXBGS     # Broad dollar index
+    - M2SL         # M2 money stock
+    - GDPC1        # Real GDP
+    - HOUST        # Housing starts
+    - DCOILWTICO   # WTI crude
+
+gdelt:
+  enabled: true
+  requests_per_second: 1.0
+  # GDELT rejects aggressive querying; it is a free public service.
+  lookback_days: 1
+  max_records_per_query: 250
+  # Company queries rotate deterministically by day, so coverage is even over
+  # time without hammering a free service with 500 queries a night.
+  symbols_per_run: 40
+  # GDELT returns HTTP 429 for minutes at a time regardless of pacing. Keep
+  # retries low and trip a circuit breaker rather than letting 44 queries each
+  # burn their retry budget and stall the run for an hour.
+  max_attempts: 2
+  circuit_breaker_failures: 5
+  # Query the tracked universe by company name, plus these macro themes.
+  themes:
+    - ECON_INTERESTRATE
+    - ECON_STOCKMARKET
+    - ECON_INFLATION
+    - ECON_EARNINGSREPORT
+
+finnhub:
+  # Secondary/cross-check source. Disabled until a key is present.
+  enabled: true
+  requests_per_second: 1.0   # free tier is 60/min
+  fetch_company_news: true
+  fetch_quote_crosscheck: true
+  # Cross-check a random sample of N symbols/day against yfinance closes rather
+  # than all 500, to stay inside the free tier.
+  crosscheck_sample_size: 50
+  news_lookback_days: 1
+
+pipeline:
+  # Order matters: universe must refresh before anything that iterates symbols.
+  stages:
+    - universe
+    - ohlcv
+    - options
+    - sec_edgar
+    - fred
+    - gdelt
+    - finnhub
+  # A stage failing does not stop later stages; it is recorded in the run summary.
+  continue_on_stage_failure: true
+  # Per-stage wall-clock cap. null = no cap.
+  stage_timeout_minutes:
+    options: 360
+    ohlcv: 60
+    sec_edgar: 120
+    fred: 20
+    gdelt: 30
+    finnhub: 30
+
+logging:
+  level: INFO
+  # Rotating file logs under <root>/_logs/
+  file_level: DEBUG
+  retention_days: 90
+  json_logs: false
+
+compaction:
+  enabled: true
+  # Merge daily delta files older than this into consolidated partition files.
+  min_age_days: 2
+  # Datasets to compact.
+  datasets: [ohlcv, options_chains, news_events, filings_text]

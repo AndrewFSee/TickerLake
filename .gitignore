@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.local
+
+# Data lake (never commit bulk data).
+# Note the `data/*` form rather than `data/`: git cannot re-include a file that
+# lives inside an excluded *directory*, so excluding the contents instead is what
+# lets the membership CSV exception below actually work.
+data/*
+
+# Exception: the point-in-time membership table is small, diffable, and the one
+# artefact worth reviewing in history - index changes become visible in the diff.
+!data/membership/
+data/membership/*
+!data/membership/*.csv
+
+# Logs & checkpoints
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
