@@ -501,8 +501,15 @@ session that is ~196k rows/day for the full universe, about 1.9 MB/day
 
 These are bars: no trade-level detail, no bid/ask, no trade conditions, no size
 beyond per-bar volume. Anything needing genuine order-flow microstructure needs a
-real tape, and the cheapest honest route there is Alpaca's free IEX feed with the
-2.5%-of-volume caveat understood, or a paid SIP feed.
+real tape.
+
+**Decision: we are not collecting ticks.** Alpaca's free IEX feed was considered
+and declined. At daily-to-hourly horizons 1-minute bars carry nearly all the
+signal IEX-sampled ticks would, without the distortion of a 2.5% sample - and a
+2.5% sample is actively misleading for anything volume-weighted (VWAP,
+participation rate, volume profile), because it is not a random 2.5%. Revisit
+only if a model turns up that genuinely needs order flow; at that point the
+honest options are Alpaca IEX with the bias understood, or a paid SIP feed.
 
 ---
 
