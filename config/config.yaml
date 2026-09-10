@@ -115,12 +115,30 @@ fred:
     - INDPRO       # Industrial production
     - UMCSENT      # Consumer sentiment
     - VIXCLS       # VIX close
-    - BAMLH0A0HYM2 # High-yield OAS (credit stress)
     - DTWEXBGS     # Broad dollar index
     - M2SL         # M2 money stock
     - GDPC1        # Real GDP
     - HOUST        # Housing starts
     - DCOILWTICO   # WTI crude
+    # Credit stress. BAMLH0A0HYM2 is the usual choice, but FRED only serves the
+    # trailing ~3 years of ICE BofA data (licensed), so it is kept for recent
+    # detail and paired with Moody's spreads that go back to the 1980s.
+    - BAMLH0A0HYM2 # High-yield OAS (only ~3y of history available on FRED)
+    - BAA10Y       # Moody's Baa minus 10Y Treasury (1986-, full history)
+    - AAA10Y       # Moody's Aaa minus 10Y Treasury (1983-, full history)
+    - NFCI         # Chicago Fed National Financial Conditions Index (1971-, weekly)
+    - STLFSI4      # St. Louis Fed Financial Stress Index (1993-, weekly)
+    # Inflation expectations and real rates - among the most useful macro
+    # features available free, and absent from the original set.
+    - T5YIE        # 5Y breakeven inflation
+    - T10YIE       # 10Y breakeven inflation
+    - DFII10       # 10Y TIPS real yield
+    - PCEPILFE     # Core PCE (the Fed's preferred gauge)
+    # Liquidity and activity
+    - SOFR         # Secured overnight financing rate
+    - WALCL        # Fed balance sheet total assets (weekly)
+    - ICSA         # Initial jobless claims (weekly, leading indicator)
+    - RSAFS        # Advance retail sales
 
 gdelt:
   enabled: true

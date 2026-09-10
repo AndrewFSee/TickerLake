@@ -136,7 +136,20 @@ class FinnhubFetcher(BaseFetcher):
     def _crosscheck(
         self, client: HttpClient, token: str, run_date: date, result: FetchResult
     ) -> None:
-        """Compare Finnhub's close against the stored yfinance close."""
+        """Compare Finnhub's previous close against our stored close for that session.
+
+        Aligning the *dates* is the whole difficulty here. Finnhub's ``pc`` is the
+        close of the session before the quote's own timestamp, so it is always a
+        completed session. Our stored OHLCV, by contrast, includes a provisional
+        bar for the current day whenever the run happens while the market is open.
+
+        Comparing "our latest row" to ``pc`` therefore compares two different
+        sessions -- silently, and with a plausible-looking 0.5-2% drift that reads
+        as a data-quality problem when nothing is wrong. So we resolve the session
+        ``pc`` refers to from the quote timestamp, and compare against our stored
+        close for exactly that date. Both sides are then completed closes, and
+        genuine disagreement is the only thing left that can trip the check.
+        """
         sample_size = int(self.cfg("crosscheck_sample_size", 50))
         candidates = self._current_members()
         if not candidates or sample_size <= 0:
@@ -152,10 +165,11 @@ class FinnhubFetcher(BaseFetcher):
         rows: list[dict[str, Any]] = []
         mismatches = 0
         compared = 0
+        unaligned = 0
 
         for symbol in sample:
-            our_close = ours.get(symbol)
-            if our_close is None:
+            by_date = ours.get(symbol)
+            if not by_date:
                 continue
             try:
                 quote = client.get_json(
@@ -165,10 +179,19 @@ class FinnhubFetcher(BaseFetcher):
                 self.log.debug("quote %s failed: %s", symbol, exc)
                 continue
 
-            # 'pc' is previous close, which is what lines up with a post-close run.
-            their_close = _safe_float(quote.get("pc")) or _safe_float(quote.get("c"))
+            their_close = _safe_float(quote.get("pc"))
             if not their_close or their_close <= 0:
                 continue
+
+            # The session `pc` describes: the last one strictly before the quote.
+            quote_dt = _from_epoch(quote.get("t"))
+            quote_date = quote_dt.date() if quote_dt else run_date
+            prior = [d for d in by_date if d < quote_date]
+            if not prior:
+                unaligned += 1
+                continue
+            session = max(prior)
+            our_close = by_date[session]
 
             compared += 1
             diff = abs(their_close - our_close) / our_close
@@ -176,8 +199,9 @@ class FinnhubFetcher(BaseFetcher):
             if not passed:
                 mismatches += 1
                 self.log.warning(
-                    "price mismatch %s: yfinance=%.2f finnhub=%.2f (%.1f%%)",
+                    "price mismatch %s on %s: yfinance=%.2f finnhub=%.2f (%.2f%%)",
                     symbol,
+                    session,
                     our_close,
                     their_close,
                     diff * 100,
@@ -190,10 +214,18 @@ class FinnhubFetcher(BaseFetcher):
                     "dataset": P.OHLCV,
                     "metric": f"close_crosscheck:{symbol}",
                     "value_num": diff,
-                    "value_text": f"yfinance={our_close:.4f} finnhub={their_close:.4f}",
+                    "value_text": (
+                        f"session={session} yfinance={our_close:.4f} finnhub={their_close:.4f}"
+                    ),
                     "passed": passed,
                     "recorded_at": now,
                 }
+            )
+
+        if unaligned:
+            result.add_warning(
+                f"{unaligned} symbol(s) had no stored close before the quote date; "
+                "run the ohlcv stage first for a meaningful cross-check"
             )
 
         if rows:
@@ -217,20 +249,30 @@ class FinnhubFetcher(BaseFetcher):
                 "cross-check: %d/%d closes agree with Finnhub", compared - mismatches, compared
             )
 
-    def _our_closes(self, run_date: date, symbols: list[str]) -> dict[str, float]:
-        """Most recent stored close per symbol, within a short window."""
+    def _our_closes(self, run_date: date, symbols: list[str]) -> dict[str, dict[date, float]]:
+        """Stored closes per symbol, keyed by session date.
+
+        Returns the whole recent window rather than just the newest row, so the
+        caller can pick the session that actually lines up with the quote instead
+        of assuming the latest stored bar is a completed close.
+        """
         from tickerlake.storage.query import LakeQuery
 
         try:
             with LakeQuery(self.paths.root) as q:
-                df = q.ohlcv(symbols=symbols, start=run_date - timedelta(days=7), end=run_date)
+                df = q.ohlcv(symbols=symbols, start=run_date - timedelta(days=10), end=run_date)
         except Exception as exc:
             self.log.debug("could not read stored closes: %s", exc)
             return {}
         if df.empty:
             return {}
-        latest = df.sort_values("date").groupby("symbol").tail(1)
-        return {r.symbol: float(r.close) for r in latest.itertuples() if pd.notna(r.close)}
+
+        out: dict[str, dict[date, float]] = {}
+        for row in df.itertuples():
+            if pd.isna(row.close):
+                continue
+            out.setdefault(row.symbol, {})[_as_plain_date(row.date)] = float(row.close)
+        return out
 
     # --------------------------------------------------------------- helpers
 
@@ -248,6 +290,19 @@ class FinnhubFetcher(BaseFetcher):
         offset = (run_date.toordinal() * per_run) % len(members)
         rotated = members[offset:] + members[:offset]
         return rotated[:per_run]
+
+
+def _as_plain_date(value: Any) -> date:
+    """Coerce to a bare ``datetime.date``.
+
+    ``pd.Timestamp`` subclasses ``datetime``, which subclasses ``date``, so an
+    ``isinstance(value, date)`` guard passes for Timestamps and leaves them
+    unconverted -- and comparing a Timestamp to a date then raises. Exclude
+    ``datetime`` explicitly.
+    """
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    return pd.Timestamp(value).date()
 
 
 def _from_epoch(value: Any) -> datetime | None:

@@ -200,6 +200,8 @@ Benchmarked on this machine against the live APIs:
 | Options snapshot | **503 symbols (projected)** | **~95 min** | ~850k rows / ~20 MB |
 | OHLCV incremental | 848 tracked symbols | 7.1 min | 637 returned data, 211 empty |
 | SEC EDGAR daily | 60 filings + 120 XBRL refreshes | 2.7 min | 3,039,680 rows / 15.5 MB |
+| FRED | 31 series, 2010-present | 28 s | 65,325 rows / 0.5 MB |
+| Finnhub | 40 news + 50 price cross-checks | 1.5 min | 251 rows, 50/50 agree |
 | GDELT (while 429ing) | circuit breaker trip | 1.5 min | 0 rows, run continues |
 
 A full daily run with all stages enabled lands at roughly **2 hours**, dominated
@@ -398,6 +400,10 @@ Ordered by value-per-effort for ML features. All free unless noted.
 7. **SEC 13F holdings** — quarterly institutional positions. Heavy to parse, but
    ownership-change features are hard to get free anywhere else.
 
+**Already wired up as of the latest run:** FRED now collects 31 series including
+inflation breakevens (`T5YIE`, `T10YIE`), the 10Y real yield (`DFII10`), core PCE,
+Fed balance sheet, initial claims, and two financial-conditions indices.
+
 **High value, free key required**
 
 8. **Alpha Vantage** — free tier includes earnings *estimates* and surprises,
@@ -438,6 +444,11 @@ daily, and genuinely absent from everything else here).
 - **623 of 848** tracked symbols map to a current SEC CIK; the remainder are
   delisted tickers absent from SEC's current ticker file. Their filing history is
   still reachable by CIK if you need it.
+- **`BAMLH0A0HYM2` (high-yield OAS) only has ~3 years of history.** This is a
+  FRED restriction on licensed ICE BofA data, not a collection bug — FRED's own
+  `observation_start` for that series is 2023-09-11. `BAA10Y` (1986–) and
+  `AAA10Y` (1983–) are configured alongside it as full-history credit-spread
+  substitutes.
 - **211 of 848** tracked symbols returned no OHLCV on the first full run. These
   are long-delisted historical members (WFM, XLNX, WCG, ...) that Yahoo no longer
   serves. They are counted, not dropped — after
