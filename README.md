@@ -144,6 +144,50 @@ TickerLake/
 └── data/                       # the lake (gitignored, except membership CSV)
 ```
 
+### ETFs
+
+60 ETFs are collected alongside the index constituents, giving factor, sector,
+duration and commodity exposure that individual equities cannot: broad US
+equity (including `RSP` for the equal-weight vs cap-weight breadth signal),
+style and factor funds, all 11 GICS sector SPDRs, high-beta industry proxies, a
+fixed-income duration ladder plus credit and inflation, commodities,
+international, real estate, and VIX futures. Edit `etfs.symbols` in the config
+to change the list.
+
+**They are deliberately not index members.** Two different questions live in the
+membership table:
+
+| Question | Scope |
+|---|---|
+| "who was in the S&P 500 on date X" | `index_name` -- the survivorship primitive |
+| "whose data do we fetch" | `collect_indices` |
+
+ETFs belong only to the second, and are registered under `index_name=ETF`.
+Filing them under `SP500` would make `members_on()` return ~563 constituents on
+every historical date and silently corrupt every survivorship-sensitive query --
+precisely the bias this project exists to prevent. Verified: `members_on()`
+still returns 497 / 505 / 503 for 2012 / 2020 / 2026 with zero ETF leakage,
+while `current_members()` grows to 563.
+
+Removing a ticker from the config stops future collection but retains its
+history, exactly as a delisted constituent's history is retained.
+
+**Cost of adding them:** +8 minutes on the options stage (74,977 extra contracts
+against 388,773 for the S&P 500) and 241,638 extra OHLCV rows. All 60 backfilled
+cleanly to 2010, and the inception dates check out against reality -- `XLC` from
+2018-06-19 when Communication Services was created, `XLRE` from 2015-10-08 ahead
+of Real Estate becoming a GICS sector, `VXX` from 2018-01-25.
+
+The collected implied volatilities order themselves the way theory says they
+should, which is useful independent evidence that both the ETF data and the IV
+solver are sound:
+
+| Lowest ATM IV | | Highest ATM IV | |
+|---|---|---|---|
+| SHY (1-3y Treasury) | 3.95% | VXX (VIX futures) | 60.1% |
+| AGG (aggregate bond) | 4.61% | USO (crude oil) | 56.5% |
+| IEF (7-10y Treasury) | 7.27% | SLV (silver) | 44.1% |
+
 ---
 
 ## Storage layout
