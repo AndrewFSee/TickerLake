@@ -630,6 +630,55 @@ artefact.
 
 ---
 
+### Level 2 (order book depth)
+
+Free L2 for US equities exists, is current, and is almost certainly impractical
+to collect here. Measured directly:
+
+**IEX DEEP** -- the IEX exchange publishes its full depth-of-book feed as free
+historical pcap. `https://iextrading.com/api/1.0/hist` lists every daily file.
+
+| | |
+|---|---|
+| Coverage | 2,357 trading days, 2017-05-15 to present (current through yesterday) |
+| Feeds | DEEP (L2 depth), DPLC/DPLS (deep + auction), TOPS (L1) |
+| Recent size | **12.5 GB/day compressed** |
+| Full archive | **9.34 TB compressed** |
+| One year forward | **~3.16 TB/year** |
+| Format | gzipped pcap of the IEX-TP multicast feed |
+| Access | HTTP 206 range requests supported |
+
+Three things make it impractical as a daily collection stage:
+
+1. **Volume.** 3.16 TB/year against a lake that is presently ~5 GB/year for
+   options. Even streaming and discarding, that is 12.5 GB/day of download,
+   roughly 375 GB/month.
+2. **You cannot cheaply extract one symbol.** Range requests return 206, but the
+   file is gzip, and gzip is not seekable -- reaching byte N means decompressing
+   everything before it. Filtering to the S&P 500 still means streaming the
+   whole 12.5 GB through a parser each day.
+3. **It is IEX's book, not the market's.** IEX is ~2.5% of consolidated volume,
+   so displayed depth is thin and is not the NBBO. Book-imbalance or depth
+   features built from it describe one venue, not the market.
+
+Plus the binary IEX-TP/DEEP protocol needs a parser; the available libraries are
+lightly maintained.
+
+**Practical verdict:** viable for *selective* research -- pulling specific days
+for specific symbols on demand -- and not viable as a nightly job on local disk.
+
+**Crypto L2 is free and complete.** Verified working: Coinbase
+(`api.exchange.coinbase.com/products/{pair}/book?level=2`) returns a full 1.1 MB
+book, and Kraken's `Depth` endpoint works. Binance returns HTTP 451 from US IPs.
+If crypto ever enters scope, full-depth L2 is free, small, and needs no key --
+the opposite of the equities situation.
+
+**Paid consolidated L2:** Databento is the usual route (MBP-10 is their L2
+schema, Standard plan around $199/month). That buys the consolidated book rather
+than a single venue's.
+
+---
+
 ## Additional data sources worth adding
 
 Ordered by value-per-effort for ML features. All free unless noted.
