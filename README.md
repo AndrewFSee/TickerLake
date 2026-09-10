@@ -538,6 +538,56 @@ out ch. 19's microstructural features (Kyle's lambda, VPIN, Roll measure).
 `signed_volume_proxy()` computes a bar-level approximation under a name that
 does not pretend to be VIB/DIB.
 
+#### Which bar type should you actually use?
+
+Information-driven bars are widely assumed to be an HFT technique. They are not.
+The problem they solve is **statistical, not latency-related**: markets do not
+process information at a constant rate, so a time bar spanning a quiet August
+Tuesday and one spanning an earnings release are treated as equivalent
+observations by any model, despite containing wildly different amounts of
+information. That distortion exists at every horizon.
+
+Ranked for non-HFT use:
+
+1. **Dollar bars - the default.** Invariant to price level and to splits. Across
+   just ten large caps there have been 15 splits since 2010, including CMG 50:1,
+   AMZN 20:1 and NVDA 10:1. A split multiplies share volume overnight without
+   changing traded value, so a fixed *volume* threshold would suddenly sample
+   50x more often for CMG in June 2024. Dollar thresholds are untouched. Over a
+   2010-2026 sample this is decisive.
+2. **Volume bars - situational.** Reasonable when share flow is what you
+   actually model (market-impact work), but the split and price-drift problems
+   above make them a poor default for long samples.
+3. **Time bars - still the right choice sometimes.** Necessary whenever
+   observations must align to a calendar, which in this lake is most of the
+   time: daily OHLCV, macro series, earnings dates and option snapshots are all
+   calendar-indexed.
+4. **Tick bars - weakest outside HFT.** Trade count is badly non-stationary over
+   long samples because algorithmic order-slicing has steadily shrunk average
+   trade size; one parent order becomes hundreds of child prints. The unit of
+   measurement drifts underneath you.
+5. **Imbalance and run bars - genuinely short-horizon.** They detect order-flow
+   imbalance, which mean-reverts on timescales far shorter than a daily
+   rebalance. This is the part of ch. 2 most tied to execution and
+   short-horizon alpha.
+
+Which is a convenient result: the bars that matter most away from HFT (dollar)
+are exactly the ones reconstructable from minute data, and the ones that need
+tick data (imbalance, run) are the ones most specific to HFT.
+
+**The honest caveat.** Dollar bars break calendar alignment. Every join in this
+lake - macro series, earnings, filings, option snapshots - is date-indexed, so
+using them means as-of joins against everything else. If the model is
+fundamentally daily-horizon, that friction can outweigh the statistical gain.
+Dollar bars earn their keep for intraday-to-multiday horizons.
+
+**Where the returns actually are.** For most non-HFT work, AFML chapters 3-7
+matter more than chapter 2, and all of them operate on whatever bars you choose:
+triple-barrier labelling and meta-labelling (ch. 3), concurrency-adjusted sample
+weights for overlapping labels (ch. 4), fractional differentiation (ch. 5), and
+purged K-fold CV with embargo (ch. 7). Getting labelling and cross-validation
+right beats perfecting the bar definition.
+
 **The approximation still delivers the benefit.** AFML's central claim is that
 information-driven bars have better statistical properties than time bars.
 Measured on real AAPL minute data, matched bar counts:
