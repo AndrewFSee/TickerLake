@@ -698,10 +698,43 @@ That, plus ~45 minutes of nightly runtime, is the real price.
 volume. A reconstructed IEX book is one venue's resting liquidity, not the NBBO,
 and depth or imbalance features built from it should be read that way.
 
-**Practical verdict:** *selective* research pulls are clearly worthwhile. Nightly
-collection is now technically viable rather than impossible -- the question is
-whether 345 GB/month and 45 min/night buys enough, given the data describes 2.5%
-of the market.
+#### `tickerlake l2` -- the selective reconstructor
+
+Built as an **on-demand tool, deliberately not a pipeline stage**. Name a date
+and some symbols; it streams that day's DEEP file, rebuilds the books, writes
+1-minute snapshots, and discards the rest.
+
+```powershell
+tickerlake l2 --list-dates
+tickerlake l2 --date 2026-09-09 --symbols AAPL,MSFT,NVDA,SPY --depth 5
+```
+
+There is no urgency to run it daily. Unlike option chains -- which Yahoo serves
+live-only, so an uncaptured day is gone -- **the IEX archive reaches back to
+2017-05-15 and does not expire**. Any past day can be rebuilt whenever a
+question actually needs it, which is what makes on-demand the right shape.
+
+Each snapshot carries the book state at the minute boundary *and* time-weighted
+averages across the whole minute. That distinction matters: a snapshot taken at
+exactly 09:31:00.000 is one instant out of ~60 seconds of quoting and can land
+on a momentary wide spread that never represented anything. Each book state is
+weighted by how long it actually stood.
+
+Columns include `best_bid`/`best_ask`, `spread`, `mid`, `microprice` (size-
+weighted mid, which leans toward the thinner side and predicts the next trade
+better than the mid), `imbalance_l1`, `bid_depth`/`ask_depth`, the time-weighted
+`twa_spread`/`twa_mid`/`twa_imbalance`, `quoted_seconds`, `n_updates`,
+`n_trades`, `trade_volume`, `trade_notional`, and `bid_px_1..N`/`bid_sz_1..N`
+plus the ask side. `n_updates` is a genuine microstructure activity measure
+available nowhere else in the lake.
+
+Snapshots land on the same 1-minute grid as `intraday_bars`, so they join
+directly on `(symbol, datetime)`.
+
+**Practical verdict:** selective pulls are clearly worthwhile and are what is
+built. Nightly collection is technically viable but was declined -- 345 GB/month
+and 45 min/night is a steep recurring price for depth describing 2.5% of the
+market, and the archive's permanence means nothing is lost by waiting.
 
 **Crypto L2 is free and complete.** Verified working: Coinbase
 (`api.exchange.coinbase.com/products/{pair}/book?level=2`) returns a full 1.1 MB

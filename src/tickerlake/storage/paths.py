@@ -43,6 +43,7 @@ FILINGS_FACTS = "filings_facts"
 MACRO_SERIES = "macro_series"
 NEWS_EVENTS = "news_events"
 INTRADAY_BARS = "intraday_bars"
+BOOK_SNAPSHOTS = "book_snapshots"
 OPTIONS_GREEKS = "options_greeks"
 OPTIONS_FLOW = "options_flow"
 SHORT_VOLUME = "short_volume"
@@ -55,6 +56,7 @@ DATASETS = [
     OHLCV,
     OPTIONS_CHAINS,
     INTRADAY_BARS,
+    BOOK_SNAPSHOTS,
     OPTIONS_GREEKS,
     OPTIONS_FLOW,
     SHORT_VOLUME,
@@ -141,6 +143,12 @@ class DatasetPaths:
 
     def intraday_file(self, interval: str, day: date) -> Path:
         part = self.intraday_partition(interval, day)
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def book_snapshot_file(self, day: date) -> Path:
+        """1-minute L2 snapshots. Same grid as intraday_bars, so they join."""
+        part = self.root / BOOK_SNAPSHOTS / f"date={day.isoformat()}"
         part.mkdir(parents=True, exist_ok=True)
         return part / "data.parquet"
 

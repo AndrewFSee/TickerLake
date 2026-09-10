@@ -312,6 +312,57 @@ def cmd_bars(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_l2(args: argparse.Namespace) -> int:
+    """Reconstruct IEX order books for one day into 1-minute snapshots.
+
+    On demand, never nightly: each day is ~11.5 GB of download for depth that
+    covers ~2.5% of consolidated volume. The IEX archive reaches back to 2017
+    and does not expire, so any past day can be rebuilt when a question needs
+    it -- unlike option chains, nothing is lost by not collecting daily.
+    """
+    from tickerlake.fetchers.iex_deep import IEXDeepArchive, reconstruct_day
+
+    config = _bootstrap(args)
+
+    if args.list_dates:
+        available = IEXDeepArchive().available_dates()
+        print(f"{len(available)} trading days with DEEP data")
+        print(f"earliest: {available[0]}    latest: {available[-1]}")
+        print("most recent 10:", ", ".join(str(d) for d in available[-10:]))
+        return 0
+
+    symbols = _symbols(args)
+    if not symbols:
+        print("Specify --symbols; reconstructing all 10,000+ IEX symbols is not the intent.",
+              file=sys.stderr)
+        return 1
+    if not args.date:
+        print("Specify --date YYYY-MM-DD.", file=sys.stderr)
+        return 1
+
+    day = date.fromisoformat(args.date)
+    print(f"Reconstructing {day} for {len(symbols)} symbol(s) at depth {args.depth}.")
+    print("This streams ~11.5 GB and takes roughly 20-45 minutes. Ctrl-C is safe.")
+    try:
+        stats = reconstruct_day(
+            day=day,
+            symbols=symbols,
+            data_root=config.data_root,
+            depth=args.depth,
+            market_hours_only=not args.include_extended,
+            overwrite=args.overwrite,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nInterrupted. Nothing partial was written.", file=sys.stderr)
+        return 130
+
+    print(json.dumps(stats, indent=2, default=str))
+    return 0
+
+
 def cmd_compact(args: argparse.Namespace) -> int:
     """Merge small daily files into consolidated partitions."""
     from tickerlake.pipeline.compact import Compactor
@@ -491,6 +542,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", help="write to .csv or .parquet instead of stdout")
     p.add_argument("--limit", type=int, default=15, help="rows to print (default 15)")
     p.set_defaults(func=cmd_bars)
+
+    p = sub.add_parser("l2", help="reconstruct IEX order books into 1-minute snapshots (on demand)")
+    p.add_argument("--date", help="trading day to reconstruct (YYYY-MM-DD)")
+    p.add_argument("--symbols", help="comma-separated symbols (required)")
+    p.add_argument("--depth", type=int, default=5, help="book levels per side (default 5)")
+    p.add_argument("--include-extended", action="store_true", help="keep pre/post-market minutes")
+    p.add_argument("--overwrite", action="store_true", help="rebuild even if the day exists")
+    p.add_argument("--list-dates", action="store_true", help="show archive coverage and exit")
+    p.set_defaults(func=cmd_l2)
 
     p = sub.add_parser("compact", help="merge small daily files into consolidated partitions")
     p.add_argument("--datasets", help="comma-separated datasets, default from config")

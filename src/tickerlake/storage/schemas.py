@@ -84,6 +84,47 @@ INTRADAY_BARS_SCHEMA = pa.schema(
     ]
 )
 
+def _book_snapshot_schema(depth: int = 5) -> pa.Schema:
+    """L2 snapshots. Level count is configurable, so the schema is generated."""
+    fields = [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("datetime", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("date", pa.date32(), nullable=False),
+        pa.field("best_bid", pa.float64()),
+        pa.field("best_ask", pa.float64()),
+        pa.field("spread", pa.float64()),
+        pa.field("mid", pa.float64()),
+        pa.field("microprice", pa.float64()),
+        pa.field("imbalance_l1", pa.float64()),
+        pa.field("bid_depth", pa.float64()),
+        pa.field("ask_depth", pa.float64()),
+        # Time-weighted across the minute rather than sampled at its boundary:
+        # a single instant can land on a momentary spread that never held.
+        pa.field("twa_spread", pa.float64()),
+        pa.field("twa_mid", pa.float64()),
+        pa.field("twa_imbalance", pa.float64()),
+        pa.field("quoted_seconds", pa.float64()),
+        pa.field("n_updates", pa.int32()),
+        pa.field("n_trades", pa.int32()),
+        pa.field("trade_volume", pa.int64()),
+        pa.field("trade_notional", pa.float64()),
+    ]
+    for i in range(1, depth + 1):
+        fields += [
+            pa.field(f"bid_px_{i}", pa.float64()),
+            pa.field(f"bid_sz_{i}", pa.float64()),
+            pa.field(f"ask_px_{i}", pa.float64()),
+            pa.field(f"ask_sz_{i}", pa.float64()),
+        ]
+    fields += [
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+    return pa.schema(fields)
+
+
+BOOK_SNAPSHOTS_SCHEMA = _book_snapshot_schema(5)
+
 OPTIONS_GREEKS_SCHEMA = pa.schema(
     [
         pa.field("symbol", pa.string(), nullable=False),
@@ -314,6 +355,7 @@ SCHEMAS: dict[str, pa.Schema] = {
     P.OHLCV: OHLCV_SCHEMA,
     P.OPTIONS_CHAINS: OPTIONS_SCHEMA,
     P.INTRADAY_BARS: INTRADAY_BARS_SCHEMA,
+    P.BOOK_SNAPSHOTS: BOOK_SNAPSHOTS_SCHEMA,
     P.OPTIONS_GREEKS: OPTIONS_GREEKS_SCHEMA,
     P.OPTIONS_FLOW: OPTIONS_FLOW_SCHEMA,
     P.SHORT_VOLUME: SHORT_VOLUME_SCHEMA,
@@ -401,6 +443,12 @@ RULES: dict[str, ValidationRule] = {
         unique_on=("symbol", "datetime", "interval"),
         not_all_null=("close",),
         non_negative=("volume",),
+    ),
+    P.BOOK_SNAPSHOTS: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "datetime", "date"),
+        unique_on=("symbol", "datetime"),
+        non_negative=("bid_depth", "ask_depth", "n_updates", "trade_volume"),
     ),
     P.OPTIONS_GREEKS: ValidationRule(
         min_rows=1,
