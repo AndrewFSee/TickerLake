@@ -66,6 +66,24 @@ OPTIONS_SCHEMA = pa.schema(
     ]
 )
 
+INTRADAY_BARS_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("datetime", pa.timestamp("us", tz="UTC"), nullable=False),
+        # Session date in US Eastern. A 16:00 ET bar is 20:00 UTC, so deriving
+        # this from the UTC date would misfile the afternoon session.
+        pa.field("date", pa.date32(), nullable=False),
+        pa.field("interval", pa.string(), nullable=False),
+        pa.field("open", pa.float64()),
+        pa.field("high", pa.float64()),
+        pa.field("low", pa.float64()),
+        pa.field("close", pa.float64()),
+        pa.field("volume", pa.int64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
 OPTIONS_GREEKS_SCHEMA = pa.schema(
     [
         pa.field("symbol", pa.string(), nullable=False),
@@ -295,6 +313,7 @@ QUALITY_SCHEMA = pa.schema(
 SCHEMAS: dict[str, pa.Schema] = {
     P.OHLCV: OHLCV_SCHEMA,
     P.OPTIONS_CHAINS: OPTIONS_SCHEMA,
+    P.INTRADAY_BARS: INTRADAY_BARS_SCHEMA,
     P.OPTIONS_GREEKS: OPTIONS_GREEKS_SCHEMA,
     P.OPTIONS_FLOW: OPTIONS_FLOW_SCHEMA,
     P.SHORT_VOLUME: SHORT_VOLUME_SCHEMA,
@@ -375,6 +394,13 @@ RULES: dict[str, ValidationRule] = {
         min_rows=100,
         non_null=("symbol", "index_name", "start_date", "source"),
         unique_on=("symbol", "index_name", "start_date"),
+    ),
+    P.INTRADAY_BARS: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "datetime", "date", "interval"),
+        unique_on=("symbol", "datetime", "interval"),
+        not_all_null=("close",),
+        non_negative=("volume",),
     ),
     P.OPTIONS_GREEKS: ValidationRule(
         min_rows=1,

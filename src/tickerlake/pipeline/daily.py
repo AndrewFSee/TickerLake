@@ -30,6 +30,7 @@ from tickerlake.fetchers.finra import FinraShortVolumeFetcher
 from tickerlake.fetchers.fred import FredFetcher
 from tickerlake.fetchers.gdelt import GdeltFetcher
 from tickerlake.fetchers.sec_edgar import SECEdgarFetcher
+from tickerlake.fetchers.yf_intraday import YFinanceIntradayFetcher
 from tickerlake.fetchers.yf_ohlcv import YFinanceOHLCVFetcher
 from tickerlake.fetchers.yf_options import YFinanceOptionsFetcher
 from tickerlake.storage import paths as P
@@ -41,6 +42,7 @@ log = logging.getLogger(__name__)
 
 FETCHERS = {
     "ohlcv": YFinanceOHLCVFetcher,
+    "intraday": YFinanceIntradayFetcher,
     "options": YFinanceOptionsFetcher,
     "sec_edgar": SECEdgarFetcher,
     "fred": FredFetcher,
@@ -263,7 +265,7 @@ class DailyPipeline:
             "tracker": self.tracker,
             "symbols_override": self.symbols,
         }
-        if stage == "options":
+        if stage in ("options", "intraday"):
             kwargs["limit"] = self.limit
 
         fetcher = fetcher_cls(**kwargs)

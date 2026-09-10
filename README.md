@@ -206,6 +206,7 @@ Benchmarked on this machine against the live APIs:
 | FINRA short volume | 2 days, 632 symbols each | 2.4 s | 1,263 rows |
 | Earnings (Finnhub) | calendar + 60 symbols | 2.1 min | 641 rows |
 | GDELT (bulk feed) | 16 GKG files | 26 s | 3,947 articles, 0 failures |
+| Intraday 1m bars | 6 symbols x 3 sessions | 2.0 s | 7,020 bars (390/symbol/session) |
 
 A full daily run with all stages enabled lands at roughly **2 hours**, dominated
 by the options snapshot.
@@ -268,6 +269,19 @@ Registers:
 
 Both wake the machine, run whether or not you are logged in, restart twice on
 failure, and cap at 6 hours.
+
+**The 17:30 slot is verified, not assumed.** Yahoo populates option bid/ask only
+while quotes are live, and it retains them after the close. Measured on the same
+symbols in one day:
+
+| Snapshot time | Bid coverage |
+|---|---|
+| 09:14 ET (pre-open) | 8.6% - unusable, no solvable IV |
+| 11:50 ET (mid-session) | 87.5% |
+| 16:06 ET (post-close) | 65.6% - comfortably usable |
+
+So an after-close run is fine. A pre-open run is not, and the options fetcher
+warns when coverage drops below `options.min_bid_coverage`.
 
 ```powershell
 Get-ScheduledTask -TaskName 'TickerLake-*'
@@ -447,6 +461,51 @@ interest ratios, 30-day ATM IV, and 25-delta skew.
 
 ---
 
+## Tick data: what is actually available
+
+Short answer: **consolidated (SIP) tick data is not free from anywhere.** Every
+"free tick data" option is either a single-exchange sample, a bar series, or a
+throttled snapshot stream. Tested directly rather than taken from documentation:
+
+| Source | Trade-level? | Verdict |
+|---|---|---|
+| Finnhub `/stock/tick` | No | HTTP 403 on the free tier |
+| Finnhub `/stock/bidask`, `/stock/candle` | No | HTTP 403 on the free tier |
+| Finnhub WebSocket | No | Connects and pings, delivers zero trades |
+| Yahoo WebSocket (`yf.WebSocket`) | No | Price only. No size, volume, or bid/ask; ~0.25 Hz per symbol |
+| yfinance 1m bars | No | Bars, not ticks - but the finest free granularity |
+| Alpaca free (Basic) | **Yes, IEX only** | Needs a free key. IEX is ~2.5% of US volume |
+| Polygon/Massive free | Yes, but capped | 1,000 req/day, 500 symbols/month, 1 GB - cannot cover 500 symbols daily |
+| IEX Cloud | n/a | Shut down August 2024 |
+
+The Yahoo WebSocket is worth calling out because it looks like a tick feed and
+is not: over 25 seconds it delivered 6 messages for AAPL, each carrying `price`,
+`time` and `exchange` but no size and no volume. Real AAPL tape is hundreds of
+trades per second.
+
+### What we collect instead
+
+`intraday_bars` captures 1-minute OHLCV daily, for the same reason we snapshot
+option chains: **Yahoo's intraday history is a rolling window that expires.**
+Measured per-request limits:
+
+| Interval | Max span per request | Retention |
+|---|---|---|
+| 1m | 8 days | ~30 days |
+| 2m / 5m / 15m / 30m | 60 days | 60 days |
+| 1h | 730 days | 2 years |
+
+A 1-minute day that is not captured is unrecoverable. At 390 bars per symbol per
+session that is ~196k rows/day for the full universe, about 1.9 MB/day
+(~480 MB/year) and ~3 minutes of runtime.
+
+These are bars: no trade-level detail, no bid/ask, no trade conditions, no size
+beyond per-bar volume. Anything needing genuine order-flow microstructure needs a
+real tape, and the cheapest honest route there is Alpaca's free IEX feed with the
+2.5%-of-volume caveat understood, or a paid SIP feed.
+
+---
+
 ## Additional data sources worth adding
 
 Ordered by value-per-effort for ML features. All free unless noted.
@@ -543,9 +602,9 @@ daily, and genuinely absent from everything else here).
   serves. They are counted, not dropped — after
   `silent_delist_threshold_runs` they get flagged and fall out of the active
   fetch list, while their stored history stays queryable forever.
-- **No intraday or tick data.** yfinance offers 1-minute bars for only the
-  trailing ~30 days; that belongs in a separate fetcher with its own retention
-  policy rather than bolted onto the daily job.
+- **No true tick data**, and none is available free - see "Tick data" above.
+  `intraday_bars` collects 1-minute bars daily because Yahoo's ~30-day window
+  expires, but bars are not ticks.
 - **`repair=True`** is on for OHLCV, which catches Yahoo's 100x price errors and
   missed splits. Repaired bars are flagged in the `repaired` column — a corrected
   bar is not the same evidence as a clean one.

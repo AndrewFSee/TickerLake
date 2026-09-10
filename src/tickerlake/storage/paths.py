@@ -42,6 +42,7 @@ FILINGS_TEXT = "filings_text"
 FILINGS_FACTS = "filings_facts"
 MACRO_SERIES = "macro_series"
 NEWS_EVENTS = "news_events"
+INTRADAY_BARS = "intraday_bars"
 OPTIONS_GREEKS = "options_greeks"
 OPTIONS_FLOW = "options_flow"
 SHORT_VOLUME = "short_volume"
@@ -53,6 +54,7 @@ QUALITY = "quality"
 DATASETS = [
     OHLCV,
     OPTIONS_CHAINS,
+    INTRADAY_BARS,
     OPTIONS_GREEKS,
     OPTIONS_FLOW,
     SHORT_VOLUME,
@@ -126,6 +128,17 @@ class DatasetPaths:
 
     def options_compacted_file(self, snapshot: date) -> Path:
         part = self.options_partition(snapshot)
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def intraday_partition(self, interval: str, day: date) -> Path:
+        return (
+            self.root / INTRADAY_BARS / f"interval={safe_symbol(interval).lower()}"
+            / f"date={day.isoformat()}"
+        )
+
+    def intraday_file(self, interval: str, day: date) -> Path:
+        part = self.intraday_partition(interval, day)
         part.mkdir(parents=True, exist_ok=True)
         return part / "data.parquet"
 
