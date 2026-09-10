@@ -13,8 +13,14 @@
       TickerLake-Compact  Sundays at 03:00 local, merging the week's small
                           per-symbol files into consolidated partitions.
 
-    Both run whether or not you are logged in, wake the machine if it is
-    asleep, and restart on failure. Run this script from an elevated PowerShell.
+    Both are registered with an S4U principal so they run whether or not anyone
+    is logged on, wake the machine if it is asleep, and restart on failure. Run
+    this script from an elevated PowerShell.
+
+    The S4U part matters: the default principal is LogonType Interactive, which
+    runs the task ONLY while the user is logged on and silently skips it from
+    the lock screen after a sign-out. For a collector capturing perishable data
+    that gap would go unnoticed until it was permanent.
 
 .PARAMETER DailyTime
     Local time for the daily run. Default 17:30.
@@ -72,15 +78,38 @@ $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 6) `
     -MultipleInstances IgnoreNew
 
+# Principal. Without this, Register-ScheduledTask defaults to LogonType
+# Interactive, which means "run ONLY while this user is logged on" - the task
+# silently does not fire from the lock screen after a sign-out. For a collector
+# whose whole point is capturing perishable data every weekday, that is a
+# failure mode you would not notice until the gap was permanent.
+#
+# S4U ("service for user") runs the task whether or not anyone is logged on and
+# does not require storing a password. It needs the "Log on as a batch job"
+# right, which administrators hold by default; if registration fails on a
+# locked-down machine, fall back to Interactive and accept the caveat.
+$UserId = "$env:USERDOMAIN\$env:USERNAME"
+try {
+    $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
+    $LogonNote = 'runs whether or not you are logged on (S4U)'
+}
+catch {
+    Write-Warning "S4U principal unavailable ($($_.Exception.Message)); falling back to Interactive."
+    Write-Warning "The task will then run ONLY while $UserId is logged on."
+    $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
+    $LogonNote = 'runs ONLY while you are logged on (Interactive)'
+}
+
 Register-ScheduledTask `
     -TaskName 'TickerLake-Daily' `
     -Action $DailyAction `
     -Trigger $DailyTrigger `
     -Settings $Settings `
+    -Principal $Principal `
     -Description 'TickerLake daily market data collection (OHLCV, options chains, filings, macro, news).' `
     -Force | Out-Null
 
-Write-Output "Registered TickerLake-Daily (weekdays at $DailyTime)."
+Write-Output "Registered TickerLake-Daily (weekdays at $DailyTime) - $LogonNote."
 
 # --- Weekly compaction ------------------------------------------------------
 
@@ -96,10 +125,20 @@ Register-ScheduledTask `
     -Action $CompactAction `
     -Trigger $CompactTrigger `
     -Settings $Settings `
+    -Principal $Principal `
     -Description 'TickerLake weekly Parquet compaction.' `
     -Force | Out-Null
 
-Write-Output "Registered TickerLake-Compact (Sundays at $CompactTime)."
+Write-Output "Registered TickerLake-Compact (Sundays at $CompactTime) - $LogonNote."
+Write-Output ""
+Write-Output "--- verification ---"
+Get-ScheduledTask -TaskName 'TickerLake-*' | ForEach-Object {
+    $info = $_ | Get-ScheduledTaskInfo
+    $logon = $_.Principal.LogonType
+    $flag = if ($logon -eq 'S4U') { 'OK' } else { 'WARNING - only runs while logged on' }
+    Write-Output ("  {0,-20} state={1,-8} logon={2,-12} next={3}  [{4}]" -f `
+        $_.TaskName, $_.State, $logon, $info.NextRunTime, $flag)
+}
 Write-Output ""
 Write-Output "Verify with:   Get-ScheduledTask -TaskName 'TickerLake-*'"
 Write-Output "Run once now:  Start-ScheduledTask -TaskName 'TickerLake-Daily'"

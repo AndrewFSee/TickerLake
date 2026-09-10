@@ -267,8 +267,15 @@ Registers:
   and Yahoo needs time to settle end-of-day chains, so this leaves margin.
 - **TickerLake-Compact** — Sundays 03:00 local.
 
-Both wake the machine, run whether or not you are logged in, restart twice on
-failure, and cap at 6 hours.
+Both wake the machine, restart twice on failure, and cap at 6 hours.
+
+They are registered with an **S4U principal**, which is what makes them run
+whether or not anyone is logged on. The default principal
+(`LogonType Interactive`) runs a task *only* while the user is signed in and
+silently skips it from the lock screen afterwards -- a gap you would not notice
+until the missed options chains were permanently gone. The installer prints the
+logon type it ended up with; if it says anything other than `S4U`, the tasks
+only fire while you are logged on.
 
 **The 17:30 slot is verified, not assumed.** Yahoo populates option bid/ask only
 while quotes are live, and it retains them after the close. Measured on the same
