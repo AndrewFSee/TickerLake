@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from tickerlake.config import Config
 from tickerlake.storage import paths as P
 from tickerlake.storage.writer import ParquetWriter
+from tickerlake.utils.market_calendar import is_trading_day, why_closed
 
 if TYPE_CHECKING:
     from tickerlake.universe.membership import MembershipTracker
@@ -115,6 +116,12 @@ class BaseFetcher(ABC):
     dataset: ClassVar[str] = ""
     #: Attribute on Config.secrets that must be present, if any.
     requires_secret: ClassVar[str | None] = None
+    #: Set on stages whose source keeps serving data when the market is closed,
+    #: so a holiday run would store the previous session's values under a new
+    #: date. Yahoo's option chain does exactly that -- measured 100% identical
+    #: bid/ask/volume against the prior session. Stages that simply return
+    #: nothing on a closed day (OHLCV, filings, FINRA) leave this False.
+    requires_trading_day: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -166,6 +173,17 @@ class BaseFetcher(ABC):
 
         enabled, reason = self.is_enabled()
         if not enabled:
+            result.skipped = True
+            result.skip_reason = reason
+            self.log.info("skipping %s: %s", self.name, reason)
+            return result
+
+        if (
+            self.requires_trading_day
+            and not is_trading_day(run_date)
+            and not self.cfg("run_on_closed_days", False)
+        ):
+            reason = f"{run_date} is not a trading day ({why_closed(run_date)})"
             result.skipped = True
             result.skip_reason = reason
             self.log.info("skipping %s: %s", self.name, reason)

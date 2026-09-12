@@ -321,6 +321,45 @@ until the missed options chains were permanently gone. The installer prints the
 logon type it ended up with; if it says anything other than `S4U`, the tasks
 only fire while you are logged on.
 
+**Non-trading days are guarded.** The trigger is weekdays-only, so weekends
+never fire -- but market holidays fall on weekdays, and the sources do not all
+fail cleanly on them. Measured on a closed day:
+
+| Source | Behaviour when the market is closed |
+|---|---|
+| OHLCV, intraday | Return nothing for the closed date. Safe. |
+| SEC, FINRA | No file published, HTTP 403/404. Handled. |
+| FRED, GDELT, earnings, Finnhub | Idempotent on their natural keys. Safe. |
+| **Yahoo option chains** | **Serve a full chain carrying the previous session's quotes.** |
+
+That last one is the trap. Against the stored prior-session snapshot, a
+closed-day chain came back with bid, ask and volume **100% identical across all
+2,412 matched contracts**. Those rows are not duplicates by key -- a different
+`snapshot_date` makes them distinct -- so nothing would reject them. They would
+sit in the dataset as a plausible session whose every quote happens to match the
+day before, which reads as a real zero-change day rather than a non-event.
+
+`options`, `intraday` and `options_analytics` therefore carry
+`requires_trading_day` and skip with a stated reason. A Saturday run finishes in
+~9 minutes instead of 88, collecting only what is genuinely new:
+
+```
+  ohlcv:             OK | 5,576 rows | 697 ok / 211 skipped
+  intraday:          SKIPPED (2026-09-12 is not a trading day (Saturday))
+  options:           SKIPPED (2026-09-12 is not a trading day (Saturday))
+  options_analytics: SKIPPED (2026-09-12 is not a trading day (Saturday))
+  sec_edgar:         OK | 2,682,272 rows
+  fred:              OK | 65,356 rows
+```
+
+The calendar is self-contained (no new dependency) and computes NYSE closures
+including Good Friday, which the federal calendar omits, while excluding
+Columbus Day and Veterans Day, which it wrongly includes. Validated against
+**2,940 real SPY sessions (2015-2026) at 99.932% agreement** -- the only two
+disagreements being the ad-hoc closures for the George H.W. Bush and Jimmy
+Carter national days of mourning, which no rule set predicts. Set
+`options.run_on_closed_days: true` to override.
+
 **The 17:30 slot is verified, not assumed.** Yahoo populates option bid/ask only
 while quotes are live, and it retains them after the close. Measured on the same
 symbols in one day:

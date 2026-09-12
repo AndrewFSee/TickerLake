@@ -64,6 +64,7 @@ class YFinanceIntradayFetcher(BaseFetcher):
     """Intraday bars for the current index members."""
 
     name = "intraday"
+    requires_trading_day = True
     dataset = P.INTRADAY_BARS
 
     def __init__(self, *args: Any, limit: int | None = None, **kwargs: Any) -> None:

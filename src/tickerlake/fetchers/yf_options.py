@@ -74,6 +74,7 @@ class YFinanceOptionsFetcher(BaseFetcher):
     """Full daily option chain snapshots for the current index members."""
 
     name = "options"
+    requires_trading_day = True
     dataset = P.OPTIONS_CHAINS
 
     def __init__(self, *args: Any, limit: int | None = None, **kwargs: Any) -> None:

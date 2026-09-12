@@ -37,6 +37,7 @@ from tickerlake.storage import paths as P
 from tickerlake.storage.writer import ParquetWriter
 from tickerlake.universe import sources as SRC
 from tickerlake.universe.membership import MembershipTracker, UniverseDiff
+from tickerlake.utils.market_calendar import is_trading_day, why_closed
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +255,16 @@ class DailyPipeline:
         if not self.config.get("options_analytics.enabled", True):
             result.skipped = True
             result.skip_reason = "disabled in config"
+            summary.stages.append(result)
+            return
+
+        # Nothing to derive when no snapshot was taken.
+        if not is_trading_day(run_date) and not self.config.get(
+            "options_analytics.run_on_closed_days", False
+        ):
+            result.skipped = True
+            result.skip_reason = f"{run_date} is not a trading day ({why_closed(run_date)})"
+            log.info("skipping options_analytics: %s", result.skip_reason)
             summary.stages.append(result)
             return
 
