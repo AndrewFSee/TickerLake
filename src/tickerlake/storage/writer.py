@@ -156,6 +156,10 @@ class ParquetWriter:
             P.FILINGS_TEXT: ["filing_date", "cik"],
             P.FILINGS_FACTS: ["cik", "concept", "end_date"],
             P.MACRO_SERIES: ["series_id", "date"],
+            P.FACTORS: ["factor_set", "date", "factor"],
+            P.YIELD_CURVE: ["date", "tenor_years"],
+            P.COT: ["report_date", "market"],
+            P.INSIDER: ["symbol", "transaction_date"],
             P.NEWS_EVENTS: ["date", "symbol"],
             P.QUALITY: ["stage", "metric"],
         }.get(dataset, [])

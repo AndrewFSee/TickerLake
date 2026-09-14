@@ -293,7 +293,9 @@ class MembershipTracker:
 
         if added:
             self._df = _normalize_dates(pd.DataFrame(rows, columns=MEMBERSHIP_COLUMNS))
-            log.info("registered %d new %s symbol(s): %s", len(added), index_name, ", ".join(added[:12]))
+            log.info(
+                "registered %d new %s symbol(s): %s", len(added), index_name, ", ".join(added[:12])
+            )
         elif rows:
             self._df = _normalize_dates(pd.DataFrame(rows, columns=MEMBERSHIP_COLUMNS))
         return added, present

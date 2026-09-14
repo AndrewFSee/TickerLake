@@ -92,18 +92,18 @@ def nyse_holidays(year: int) -> frozenset[date]:
     if jan1.weekday() != 5:
         days.add(_observed(jan1))
 
-    days.add(_nth_weekday(year, 1, 0, 3))          # MLK Jr Day
-    days.add(_nth_weekday(year, 2, 0, 3))          # Washington's Birthday
+    days.add(_nth_weekday(year, 1, 0, 3))  # MLK Jr Day
+    days.add(_nth_weekday(year, 2, 0, 3))  # Washington's Birthday
     days.add(easter_sunday(year) - timedelta(days=2))  # Good Friday
-    days.add(_last_weekday(year, 5, 0))            # Memorial Day
+    days.add(_last_weekday(year, 5, 0))  # Memorial Day
 
-    if year >= 2022:                               # Juneteenth, NYSE from 2022
+    if year >= 2022:  # Juneteenth, NYSE from 2022
         days.add(_observed(date(year, 6, 19)))
 
-    days.add(_observed(date(year, 7, 4)))          # Independence Day
-    days.add(_nth_weekday(year, 9, 0, 1))          # Labor Day
-    days.add(_nth_weekday(year, 11, 3, 4))         # Thanksgiving
-    days.add(_observed(date(year, 12, 25)))        # Christmas
+    days.add(_observed(date(year, 7, 4)))  # Independence Day
+    days.add(_nth_weekday(year, 9, 0, 1))  # Labor Day
+    days.add(_nth_weekday(year, 11, 3, 4))  # Thanksgiving
+    days.add(_observed(date(year, 12, 25)))  # Christmas
 
     return frozenset(d for d in days if d is not None and d.year == year)
 

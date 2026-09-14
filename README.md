@@ -877,78 +877,80 @@ than a single venue's.
 
 ---
 
-## Additional data sources worth adding
+## Data sources
 
-Ordered by value-per-effort for ML features. All free unless noted.
+### Collected
 
-**High value, no key required**
+| Source | What it gives | Key |
+|---|---|---|
+| **yfinance** | OHLCV (2010-), 1m intraday bars, full option chains | none |
+| **SEC EDGAR** | 10-K/10-Q/8-K text, XBRL company facts | contact UA |
+| **FRED** | 31 macro series incl. breakevens, real yields, core PCE, NFCI | free |
+| **Finnhub** | Company news, price cross-check, earnings, insider Form 4 | free |
+| **FINRA** | Daily short sale volume | none |
+| **GDELT** | News tone and themes, via the bulk GKG feed | none |
+| **Ken French** | Fama-French daily factors (FF5 + momentum, 1990-) | none |
+| **US Treasury** | Official daily par yield curve, all 14 tenors | none |
+| **CFTC** | Commitments of Traders, weekly positioning by category | none |
+| **IEX DEEP** | L2 order book, on demand (`tickerlake l2`) | none |
+| *derived* | IV + Greeks, put/call ratios, ATM IV, skew | - |
 
-1. **CBOE daily volume & put/call ratios** — free CSVs of index and equity
-   put/call ratios. The single best free options-sentiment feature, and it
-   predates your own snapshot history, so it gives you a usable series on day one.
-2. **FINRA short sale volume** — daily short volume per symbol, free flat files.
-   Short interest is a well-documented cross-sectional predictor and is not in
-   any source currently wired up.
-3. **Nasdaq Data Link / Quandl free tables** — notably Fed and Treasury series
-   that FRED lags on.
-4. **US Treasury yield curve XML** — official daily curve, no key, more timely
-   than the FRED mirror.
-5. **SEC Financial Statement Data Sets** — quarterly bulk ZIPs of *all* XBRL
-   filings. Far cheaper than per-company `companyfacts` calls if you ever want
-   full-market fundamentals rather than just the index.
-6. **SEC Form 4** (insider transactions) — same EDGAR pipeline you already have;
-   only the form type changes. Insider buying clusters are a genuine signal.
-7. **SEC 13F holdings** — quarterly institutional positions. Heavy to parse, but
-   ownership-change features are hard to get free anywhere else.
+**Fama-French** is the reference against which a signal gets judged: most
+apparent alpha is market, size, value, profitability, investment or momentum
+exposure under another name. Collected values reproduce the literature -- Mkt-RF
+at 9.4% annualised on 18.1% vol, RF at 0.1% vol, SMB at 0.65% (the size premium
+really has been absent since 1990), momentum strongest at 6.2%.
 
-**Now wired up:** FINRA short volume, Finnhub earnings (surprises, forward
-calendar, analyst recommendations), and FRED's 31 series including inflation
-breakevens, the 10Y real yield, core PCE, Fed balance sheet, initial claims and
-two financial-conditions indices. Put/call ratios are computed from our own
-chains in `options_flow`.
+**The Treasury curve** supplies all 14 official tenors daily, so slope and
+curvature are exact rather than approximated from FRED's three points.
 
-**CBOE put/call ratios are no longer freely available.** The legacy
-`totalpc.csv` / `equitypc.csv` endpoints now return a JavaScript app, and the
-daily-statistics page exposes no API path and no embedded data - it is all
-behind their paid DataShop. `options_flow` computes the same statistic from our
-own chains instead, per symbol rather than as one market-wide number, at the
-cost of having no history before collection started.
+**CFTC COT** is the only source here describing *who* is positioned: asset
+managers, leveraged money and dealers, weekly, for E-mini S&P 500 and the sector
+index futures.
 
-**Alpha Vantage turned out to be unnecessary.** Finnhub's free tier - already in
-use here - provides earnings surprises, a forward earnings calendar, analyst
-recommendations, and insider transactions. Alpha Vantage's free tier is 25
-requests/day, which cannot cover a 500-symbol universe under any rotation. Its
-`HISTORICAL_OPTIONS` endpoint does return IV and Greeks, but shows the same
-implausible values on illiquid contracts (4.21 where Yahoo shows 9.45), so it is
-not a fix for the IV problem either.
+**Insider transactions** carry a trap worth knowing about. Finnhub's `share`
+field is the insider's holding *after* the trade, not the trade size; `change`
+is the transaction. Valuing the former at the trade price reported $957bn of
+buying in RSG, because Cascade Investment holds ~114M shares. The columns are
+named `shares_held_after` and `shares_transacted`, with `transaction_value`
+precomputed from the right one.
 
-**High value, free key required**
+### Ruled out, with reasons
 
-8. **Alpha Vantage** — free tier includes earnings *estimates* and surprises,
-   which nothing in the current stack provides. Earnings surprise is one of the
-   strongest short-horizon features available.
-9. **Tiingo** — free tier gives clean, adjusted EOD prices; a third opinion for
-   the cross-check that already runs against Finnhub.
-10. **NewsAPI / Marketaux** — better structured financial headlines than GDELT,
-    with more reliable symbol tagging.
+- **CBOE put/call ratios** -- no longer free. The legacy `totalpc.csv` endpoints
+  return a JavaScript app and the daily-statistics page exposes no API; it is
+  behind their paid DataShop. `options_flow` computes the same statistic from
+  our own chains, per symbol rather than one market-wide number, at the cost of
+  no history before collection started.
+- **Alpha Vantage** -- unnecessary. Finnhub's free tier already provides
+  earnings surprises, the forward calendar, recommendations and insider
+  transactions. Alpha Vantage's free tier is 25 requests/day, which cannot cover
+  500 symbols under any rotation, and its options IV shows the same implausible
+  values on illiquid contracts.
+- **Consolidated tick / L2** -- not free anywhere. See "Tick data" and "Level 2"
+  above. IEX DEEP is free and real but covers ~2.5% of volume.
 
-**Worth knowing about**
+### Still available, not built
 
-11. **Fama-French factor returns** (Ken French's data library) — free, canonical
-    daily factor series. Essential if you ever want to check whether a signal is
-    just repackaged market/size/value/momentum exposure.
-12. **CFTC Commitments of Traders** — weekly positioning in index futures.
-13. **Wikipedia / Google Trends pageview APIs** — retail attention proxies, free
-    and surprisingly predictive at short horizons.
-14. **Options-implied dividend and borrow rates** — derivable from the put-call
-    parity violations already sitting in your own chain snapshots. No new source
-    needed; just a feature-engineering job over data you are already collecting.
+**Free, no key:**
 
-The two I would add next are **CBOE put/call ratios** (immediate history, no key,
-directly complements the options snapshots) and **FINRA short volume** (free,
-daily, and genuinely absent from everything else here).
+- **SEC Financial Statement Data Sets** -- quarterly bulk XBRL ZIPs (~60 MB
+  each). Only worth it for full-market fundamentals; `filings_facts` already
+  covers the tracked universe.
+- **SEC 13F** -- quarterly institutional holdings. Ownership-change features are
+  hard to get free, but the parse is heavy and the frequency low.
+- **Wikipedia / Google Trends pageviews** -- retail attention proxies, verified
+  reachable, surprisingly predictive at short horizons.
 
----
+**Free key required:**
+
+- **Tiingo** -- clean adjusted EOD; a third opinion for the price cross-check.
+- **Marketaux / NewsAPI** -- better symbol tagging than GDELT.
+
+**Derivable from data already collected:**
+
+- **Options-implied dividend and borrow rates** -- from put-call parity
+  violations in the stored chains. No new source, just a feature job.
 
 ## Known limitations
 

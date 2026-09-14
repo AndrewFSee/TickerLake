@@ -51,14 +51,14 @@ def test_good_friday_is_two_days_before_easter_and_is_a_friday():
 
 def test_2026_holiday_set():
     assert sorted(nyse_holidays(2026)) == [
-        date(2026, 1, 1),    # New Year's Day (Thursday)
-        date(2026, 1, 19),   # MLK Jr Day
-        date(2026, 2, 16),   # Washington's Birthday
-        date(2026, 4, 3),    # Good Friday
-        date(2026, 5, 25),   # Memorial Day
-        date(2026, 6, 19),   # Juneteenth (Friday)
-        date(2026, 7, 3),    # Independence Day observed (Jul 4 is a Saturday)
-        date(2026, 9, 7),    # Labor Day
+        date(2026, 1, 1),  # New Year's Day (Thursday)
+        date(2026, 1, 19),  # MLK Jr Day
+        date(2026, 2, 16),  # Washington's Birthday
+        date(2026, 4, 3),  # Good Friday
+        date(2026, 5, 25),  # Memorial Day
+        date(2026, 6, 19),  # Juneteenth (Friday)
+        date(2026, 7, 3),  # Independence Day observed (Jul 4 is a Saturday)
+        date(2026, 9, 7),  # Labor Day
         date(2026, 11, 26),  # Thanksgiving
         date(2026, 12, 25),  # Christmas (Friday)
     ]
@@ -107,7 +107,7 @@ def test_federal_only_holidays_are_not_nyse_closures():
 def test_weekends_are_never_trading_days():
     assert not is_trading_day(date(2026, 9, 12))  # Saturday
     assert not is_trading_day(date(2026, 9, 13))  # Sunday
-    assert is_trading_day(date(2026, 9, 11))      # Friday
+    assert is_trading_day(date(2026, 9, 11))  # Friday
 
 
 def test_known_closures_and_sessions():

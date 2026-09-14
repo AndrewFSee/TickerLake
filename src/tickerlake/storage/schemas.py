@@ -317,6 +317,87 @@ MACRO_SCHEMA = pa.schema(
     ]
 )
 
+FACTORS_SCHEMA = pa.schema(
+    [
+        pa.field("date", pa.date32(), nullable=False),
+        # FF3 and FF5 both publish Mkt-RF/SMB/HML but construct them differently,
+        # so the set is part of the key rather than a label.
+        pa.field("factor_set", pa.string(), nullable=False),
+        pa.field("factor", pa.string(), nullable=False),
+        # Daily return in percent, as published.
+        pa.field("value", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+YIELD_CURVE_SCHEMA = pa.schema(
+    [
+        pa.field("date", pa.date32(), nullable=False),
+        pa.field("tenor", pa.string(), nullable=False),
+        # Numeric maturity, so the curve can be interpolated without parsing labels.
+        pa.field("tenor_years", pa.float64(), nullable=False),
+        pa.field("yield_pct", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+COT_SCHEMA = pa.schema(
+    [
+        pa.field("report_date", pa.date32(), nullable=False),
+        pa.field("market", pa.string(), nullable=False),
+        pa.field("exchange", pa.string()),
+        pa.field("contract_code", pa.string()),
+        pa.field("open_interest", pa.float64()),
+        # Trader categories from the CFTC financial futures report.
+        pa.field("dealer_long", pa.float64()),
+        pa.field("dealer_short", pa.float64()),
+        pa.field("asset_mgr_long", pa.float64()),
+        pa.field("asset_mgr_short", pa.float64()),
+        pa.field("lev_money_long", pa.float64()),
+        pa.field("lev_money_short", pa.float64()),
+        pa.field("other_rept_long", pa.float64()),
+        pa.field("other_rept_short", pa.float64()),
+        pa.field("nonrept_long", pa.float64()),
+        pa.field("nonrept_short", pa.float64()),
+        # Net positioning is the feature people actually use; precomputed so the
+        # sign convention is fixed once rather than re-derived per query.
+        pa.field("asset_mgr_net", pa.float64()),
+        pa.field("lev_money_net", pa.float64()),
+        pa.field("dealer_net", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+INSIDER_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("insider_name", pa.string()),
+        pa.field("transaction_date", pa.date32(), nullable=True),
+        pa.field("filing_date", pa.date32(), nullable=True),
+        # SEC Form 4 codes: P = open-market purchase, S = sale, A = award,
+        # M = option exercise. P clusters are the signal; A and M are
+        # compensation events and carry little information.
+        pa.field("transaction_code", pa.string()),
+        # Named for what they are. Finnhub's `share` is the insider's TOTAL
+        # holding after the trade, not the trade size - multiplying it by price
+        # values the whole position and produces absurd notionals (Cascade
+        # Investment's 114M RSG shares came out at $25bn per transaction).
+        # `change` is the actual number of shares transacted.
+        pa.field("shares_held_after", pa.float64()),
+        pa.field("shares_transacted", pa.float64()),
+        pa.field("transaction_price", pa.float64()),
+        # Precomputed from shares_transacted so the correct figure is the one
+        # closest to hand.
+        pa.field("transaction_value", pa.float64()),
+        pa.field("accession_number", pa.string()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
 NEWS_SCHEMA = pa.schema(
     [
         pa.field("event_id", pa.string(), nullable=False),
@@ -366,6 +447,10 @@ SCHEMAS: dict[str, pa.Schema] = {
     P.FILINGS_TEXT: FILINGS_TEXT_SCHEMA,
     P.FILINGS_FACTS: FILINGS_FACTS_SCHEMA,
     P.MACRO_SERIES: MACRO_SCHEMA,
+    P.FACTORS: FACTORS_SCHEMA,
+    P.YIELD_CURVE: YIELD_CURVE_SCHEMA,
+    P.COT: COT_SCHEMA,
+    P.INSIDER: INSIDER_SCHEMA,
     P.NEWS_EVENTS: NEWS_SCHEMA,
     P.QUALITY: QUALITY_SCHEMA,
 }
@@ -496,6 +581,34 @@ RULES: dict[str, ValidationRule] = {
         min_rows=0,
         non_null=("series_id", "date"),
         unique_on=("series_id", "date"),
+    ),
+    P.FACTORS: ValidationRule(
+        min_rows=1,
+        non_null=("date", "factor_set", "factor"),
+        unique_on=("date", "factor_set", "factor"),
+    ),
+    P.YIELD_CURVE: ValidationRule(
+        min_rows=1,
+        non_null=("date", "tenor"),
+        unique_on=("date", "tenor"),
+        positive=("tenor_years",),
+    ),
+    P.COT: ValidationRule(
+        min_rows=1,
+        non_null=("report_date", "market"),
+        unique_on=("report_date", "market"),
+        non_negative=("open_interest",),
+    ),
+    P.INSIDER: ValidationRule(
+        min_rows=0,
+        non_null=("symbol",),
+        unique_on=(
+            "symbol",
+            "insider_name",
+            "transaction_date",
+            "transaction_code",
+            "shares_transacted",
+        ),
     ),
     P.NEWS_EVENTS: ValidationRule(
         min_rows=0,

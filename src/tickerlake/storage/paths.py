@@ -41,6 +41,10 @@ OPTIONS_CHAINS = "options_chains"
 FILINGS_TEXT = "filings_text"
 FILINGS_FACTS = "filings_facts"
 MACRO_SERIES = "macro_series"
+FACTORS = "factors"
+YIELD_CURVE = "yield_curve"
+COT = "cot"
+INSIDER = "insider"
 NEWS_EVENTS = "news_events"
 INTRADAY_BARS = "intraday_bars"
 BOOK_SNAPSHOTS = "book_snapshots"
@@ -64,6 +68,10 @@ DATASETS = [
     FILINGS_TEXT,
     FILINGS_FACTS,
     MACRO_SERIES,
+    FACTORS,
+    YIELD_CURVE,
+    COT,
+    INSIDER,
     NEWS_EVENTS,
     MEMBERSHIP,
     UNIVERSE_HISTORY,
@@ -214,6 +222,28 @@ class DatasetPaths:
         d = self.root / MACRO_SERIES
         d.mkdir(parents=True, exist_ok=True)
         return d / f"series_{safe_symbol(series_id)}.parquet"
+
+    # ------------------------------------------------------ macro extensions
+
+    def factors_file(self, factor_set: str) -> Path:
+        d = self.root / FACTORS
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{safe_symbol(factor_set).lower()}.parquet"
+
+    def yield_curve_file(self, year: int) -> Path:
+        d = self.root / YIELD_CURVE
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"year={year:04d}.parquet"
+
+    def cot_file(self, year: int) -> Path:
+        d = self.root / COT
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"year={year:04d}.parquet"
+
+    def insider_file(self, year: int) -> Path:
+        d = self.root / INSIDER
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"year={year:04d}.parquet"
 
     # ---------------------------------------------------------------- news
 

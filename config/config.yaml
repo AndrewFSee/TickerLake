@@ -263,6 +263,55 @@ fred:
     - ICSA         # Initial jobless claims (weekly, leading indicator)
     - RSAFS        # Advance retail sales
 
+factors:
+  # Fama-French daily factor returns (Ken French data library). The reference
+  # against which a signal is judged: most apparent alpha turns out to be
+  # market, size, value, profitability, investment or momentum exposure.
+  # FF3 and FF5 construct SMB/HML differently, so factor_set is part of the key.
+  enabled: true
+  requests_per_second: 1.0
+  sets: [FF5, MOM]     # add FF3 for the classic three-factor construction
+  start_date: "1990-01-01"
+
+yield_curve:
+  # Treasury's own daily par yield curve: all 13 tenors, published same day.
+  # FRED carries a few of these on a lag; this makes slope and curvature exact
+  # rather than approximated from three points.
+  enabled: true
+  requests_per_second: 1.0
+  years_back: 1        # raise once for history, then leave at 1
+
+cot:
+  # CFTC Commitments of Traders, financial futures. Weekly positioning split by
+  # trader category - asset managers, leveraged money, dealers. Nothing else
+  # here describes who is positioned which way.
+  # Published Friday afternoon for the preceding Tuesday.
+  enabled: true
+  requests_per_second: 1.0
+  years_back: 1
+  # The report covers 107 markets; keep the equity- and rate-relevant ones.
+  # Empty list keeps everything.
+  market_keywords:
+    - "S&P"
+    - "NASDAQ"
+    - "E-MINI"
+    - "DOW JONES"
+    - "RUSSELL"
+    - "VIX"
+    - "TREASURY"
+    - "FED FUND"
+    - "SOFR"
+
+insider:
+  # SEC Form 4 insider transactions, via Finnhub's parsed feed. Form 4 is XML
+  # ownership data rather than prose, so it does not fit the EDGAR text
+  # pipeline. Open-market purchases (code P) clustering across insiders is the
+  # signal; awards (A) and option exercises (M) are compensation events.
+  enabled: true
+  requests_per_second: 1.0
+  symbols_per_run: 60
+  lookback_days: 180
+
 gdelt:
   enabled: true
   requests_per_second: 1.0
@@ -333,8 +382,12 @@ pipeline:
     - options_analytics
     - sec_edgar
     - fred
+    - factors
+    - yield_curve
+    - cot
     - finra
     - earnings
+    - insider
     - gdelt
     - finnhub
   # A stage failing does not stop later stages; it is recorded in the run summary.
@@ -346,6 +399,10 @@ pipeline:
     options_analytics: 60
     finra: 20
     earnings: 30
+    factors: 15
+    yield_curve: 15
+    cot: 20
+    insider: 30
     ohlcv: 60
     sec_edgar: 120
     fred: 20
