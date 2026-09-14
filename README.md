@@ -188,6 +188,52 @@ solver are sound:
 | AGG (aggregate bond) | 4.61% | USO (crude oil) | 56.5% |
 | IEF (7-10y Treasury) | 7.27% | SLV (silver) | 44.1% |
 
+### Fundamentals and lookahead bias
+
+`filings_facts` holds **14.7M XBRL facts across 598 symbols** (477 of 503 S&P
+members) and 9,259 concepts, pulled from SEC companyfacts. Coverage of the
+headline financials:
+
+| Concept | Symbols |
+|---|---|
+| `Assets` | 598 |
+| `NetIncomeLoss` | 589 |
+| `StockholdersEquity` | 586 |
+| `EarningsPerShareDiluted` | 582 |
+| `OperatingIncomeLoss` | 501 |
+| `Revenues` + ASC 606 tag | 466 / 428 |
+
+`earnings` adds estimate-vs-actual surprises back to 2000, a forward calendar,
+and analyst recommendations.
+
+**The lake is survivorship-bias-free by construction; fundamentals are where
+*lookahead* bias gets in instead.** Apple's FY2025 period ended 2025-09-27 but
+was not public until the 10-K was filed on 2025-10-31. Anything keyed on
+`end_date` therefore hands a model 34 days of the future -- and far more on
+restatement, where the FY2024 figure reappears inside the FY2025 filing **398
+days** after its period closed.
+
+Use `pit_fundamentals()`, which filters on `filed_date` and never `end_date`:
+
+```python
+q.pit_fundamentals("2025-10-15", ["NetIncomeLoss"], symbols=["AAPL"])
+#  -> $23.4bn, period 2025-06-28, filed 2025-08-01   (the quarterly figure)
+
+q.pit_fundamentals("2025-11-15", ["NetIncomeLoss"], symbols=["AAPL"])
+#  -> $112.0bn, period 2025-09-27, filed 2025-10-31  (annual, now filed)
+```
+
+Two further traps worth knowing:
+
+- **`fiscal_year` is the filing's year, not the period's.** The FY2024
+  comparative inside the FY2025 10-K carries `fiscal_year = 2025`. Group by
+  `end_date`.
+- **Revenue is split across two tags.** ASC 606 introduced
+  `RevenueFromContractWithCustomerExcludingAssessedTax` in 2018 and both remain
+  in active use -- as of 2026, 260 symbols report the old `Revenues` tag and 375
+  the new one. Querying either alone silently loses about half the universe.
+  `pit_revenue()` coalesces them.
+
 ---
 
 ## Storage layout

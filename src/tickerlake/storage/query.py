@@ -375,6 +375,110 @@ class LakeQuery:
             """
         )
 
+    # ----------------------------------------------------------- fundamentals
+
+    #: Revenue moved tags when ASC 606 took effect in 2018 and both are still in
+    #: active use -- as of 2026, 260 symbols report the old tag and 375 the new.
+    #: Querying either alone silently loses roughly half the universe.
+    REVENUE_CONCEPTS = (
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+    )
+
+    def pit_fundamentals(
+        self,
+        as_of: date | str,
+        concepts: Iterable[str],
+        symbols: Iterable[str] | None = None,
+        form_types: Iterable[str] = ("10-K", "10-Q"),
+    ) -> pd.DataFrame:
+        """Fundamentals as they were *known* on ``as_of``. The anti-lookahead primitive.
+
+        Filters on ``filed_date``, never ``end_date``. A period ending
+        2025-09-27 was not public until the 10-K landed on 2025-10-31, so a
+        model trained on ``end_date`` sees 34 days of the future for free -- and
+        far more when a figure is restated: the same FY2024 number reappears in
+        the FY2025 filing 398 days after its period closed.
+
+        For each symbol and concept this takes the most recent *period* whose
+        filing was available by ``as_of``, and where that period was restated,
+        the latest restatement that had itself been filed by then.
+
+        Note that ``fiscal_year`` on a row is the **filing's** fiscal year, not
+        the period's, so grouping by it yields several rows per period. Group by
+        ``end_date`` instead.
+        """
+        as_of = _to_date(as_of)
+        concepts = list(concepts)
+        if not concepts:
+            return _empty_df(P.FILINGS_FACTS)
+
+        where = [
+            "filed_date IS NOT NULL",
+            "filed_date <= ?",
+            f"concept IN ({','.join('?' * len(concepts))})",
+        ]
+        params: list[Any] = [as_of, *concepts]
+
+        forms = list(form_types)
+        if forms:
+            where.append(f"form_type IN ({','.join('?' * len(forms))})")
+            params.extend(forms)
+        if symbols is not None:
+            syms = [s.upper() for s in symbols]
+            if not syms:
+                return _empty_df(P.FILINGS_FACTS)
+            where.append(f"symbol IN ({','.join('?' * len(syms))})")
+            params.extend(syms)
+
+        return self.sql(
+            f"""
+            SELECT symbol, concept, unit, value, start_date, end_date,
+                   filed_date, form_type, fiscal_year, fiscal_period, accession_number
+            FROM filings_facts
+            WHERE {" AND ".join(where)}
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY symbol, concept
+                ORDER BY end_date DESC, filed_date DESC
+            ) = 1
+            ORDER BY symbol, concept
+            """,
+            params,
+        )
+
+    def pit_revenue(self, as_of: date | str, symbols: Iterable[str] | None = None) -> pd.DataFrame:
+        """Latest known revenue per symbol, coalescing the pre- and post-ASC 606 tags."""
+        df = self.pit_fundamentals(as_of, self.REVENUE_CONCEPTS, symbols=symbols)
+        if df.empty:
+            return df
+        # Prefer the newer tag where a filer reports both.
+        priority = {c: i for i, c in enumerate(self.REVENUE_CONCEPTS)}
+        df["_rank"] = df["concept"].map(priority).fillna(99)
+        df = (
+            df.sort_values(["symbol", "end_date", "_rank"], ascending=[True, False, True])
+            .groupby("symbol", as_index=False)
+            .first()
+            .drop(columns=["_rank"])
+        )
+        return df
+
+    def fundamentals_concepts(self, symbol: str | None = None, limit: int = 50) -> pd.DataFrame:
+        """Most-reported XBRL concepts, for discovering what is available."""
+        where, params = ["1=1"], []
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol.upper())
+        return self.sql(
+            f"""
+            SELECT concept, COUNT(DISTINCT symbol) AS symbols, COUNT(*) AS facts
+            FROM filings_facts WHERE {" AND ".join(where)}
+            GROUP BY concept ORDER BY symbols DESC, facts DESC LIMIT {int(limit)}
+            """,
+            params,
+        )
+
     # ------------------------------------------------------------- utilities
 
     def dataset_stats(self) -> pd.DataFrame:
