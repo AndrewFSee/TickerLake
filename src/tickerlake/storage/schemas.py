@@ -411,7 +411,22 @@ NEWS_SCHEMA = pa.schema(
         pa.field("language", pa.string()),
         pa.field("country", pa.string()),
         pa.field("theme", pa.string()),
+        # GDELT's native tone, roughly -100..+100. Source-specific scale.
         pa.field("tone", pa.float64()),
+        # Normalised sentiment in -1..+1: GDELT tone divided by 100, Marketaux's
+        # per-entity score as published.
+        #
+        # The bounds match but the empirical distributions do not. GDELT tone
+        # rarely leaves -10..+10, so normalised it clusters within +/-0.1, while
+        # Marketaux routinely reaches +/-0.8. Pooling the two without
+        # standardising per source lets Marketaux dominate any model using both.
+        # The transform is left honest rather than fudged to match; standardise
+        # per source before combining.
+        pa.field("sentiment", pa.float64()),
+        # Publisher's confidence that the article is really about this symbol.
+        # Marketaux supplies it directly; GDELT has no equivalent, so it stays
+        # null there and salience offsets do the same job at ingest time.
+        pa.field("match_score", pa.float64()),
         pa.field("category", pa.string()),
         pa.field("embedding_status", pa.string()),
         pa.field("source", pa.string(), nullable=False),

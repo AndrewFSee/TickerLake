@@ -312,6 +312,40 @@ insider:
   symbols_per_run: 60
   lookback_days: 180
 
+tiingo:
+  # Independent check on ADJUSTED prices, which is where vendors actually
+  # diverge - raw closes are the easy case and already agree to the cent with
+  # Finnhub. Adjustment is a computation over dividend and split history, so a
+  # missed corporate action yields a plausible-looking series that is wrong for
+  # every prior date. Tiingo publishes adjOpen/High/Low/Close plus per-bar
+  # divCash and splitFactor, where yfinance gives only an adjusted close.
+  #
+  # The free tier caps unique symbols per MONTH, below our universe size, so
+  # this samples a rotating slice rather than sweeping everything. A sample
+  # detects a systemic adjustment fault just as well.
+  enabled: true
+  requests_per_second: 3.0
+  symbols_per_run: 25
+  lookback_days: 10
+
+marketaux:
+  # Symbol-tagged news with per-entity sentiment and a tagging confidence score
+  # - the two things GDELT cannot give. Complements rather than replaces it:
+  # the free tier is ~100 requests/day at 3 articles each, so GDELT supplies
+  # breadth and this supplies precision.
+  enabled: true
+  requests_per_second: 1.0
+  # Symbols are batched per request because the daily request cap, not the
+  # symbol count, is the binding constraint.
+  symbols_per_request: 20
+  requests_per_run: 20
+  articles_per_request: 3
+  lookback_days: 1
+  language: "en"
+  # Marketaux's own confidence that the article is about this symbol. Their
+  # scores run well above 1 for solid matches.
+  min_match_score: 10.0
+
 gdelt:
   enabled: true
   requests_per_second: 1.0
@@ -386,9 +420,11 @@ pipeline:
     - yield_curve
     - cot
     - finra
+    - tiingo
     - earnings
     - insider
     - gdelt
+    - marketaux
     - finnhub
   # A stage failing does not stop later stages; it is recorded in the run summary.
   continue_on_stage_failure: true
@@ -403,6 +439,8 @@ pipeline:
     yield_curve: 15
     cot: 20
     insider: 30
+    tiingo: 20
+    marketaux: 20
     ohlcv: 60
     sec_edgar: 120
     fred: 20

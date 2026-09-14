@@ -35,6 +35,8 @@ class Secrets:
     fred_api_key: str | None = None
     finnhub_api_key: str | None = None
     sec_user_agent: str | None = None
+    tiingo_api_key: str | None = None
+    marketaux_api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> Secrets:
@@ -42,13 +44,25 @@ class Secrets:
             fred_api_key=_clean(os.getenv("FRED_API_KEY")),
             finnhub_api_key=_clean(os.getenv("FINNHUB_API_KEY")),
             sec_user_agent=_clean(os.getenv("SEC_USER_AGENT")),
+            tiingo_api_key=_clean(os.getenv("TIINGO_API_KEY")),
+            marketaux_api_key=_clean(os.getenv("MARKETAUX_API_KEY")),
         )
 
     def has(self, name: str) -> bool:
         return bool(getattr(self, name, None))
 
     def __repr__(self) -> str:  # never leak key material into logs
-        present = [f for f in ("fred_api_key", "finnhub_api_key", "sec_user_agent") if self.has(f)]
+        present = [
+            f
+            for f in (
+                "fred_api_key",
+                "finnhub_api_key",
+                "sec_user_agent",
+                "tiingo_api_key",
+                "marketaux_api_key",
+            )
+            if self.has(f)
+        ]
         return f"Secrets(present={present})"
 
 
@@ -120,12 +134,18 @@ _REQUIRED_SECRET = {
     "fred": "fred_api_key",
     "finnhub": "finnhub_api_key",
     "sec_edgar": "sec_user_agent",
+    "earnings": "finnhub_api_key",
+    "insider": "finnhub_api_key",
+    "tiingo": "tiingo_api_key",
+    "marketaux": "marketaux_api_key",
 }
 
 _ENV_NAME = {
     "fred_api_key": "FRED_API_KEY",
     "finnhub_api_key": "FINNHUB_API_KEY",
     "sec_user_agent": "SEC_USER_AGENT",
+    "tiingo_api_key": "TIINGO_API_KEY",
+    "marketaux_api_key": "MARKETAUX_API_KEY",
 }
 
 

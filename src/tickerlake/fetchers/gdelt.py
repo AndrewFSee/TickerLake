@@ -217,6 +217,14 @@ class GdeltFetcher(BaseFetcher):
                     "country": None,
                     "theme": matched_theme,
                     "tone": tone.get("tone"),
+                    # GDELT tone runs roughly -100..+100; scale it into the
+                    # shared -1..+1 column so it compares with other sources.
+                    "sentiment": (
+                        max(-1.0, min(1.0, tone["tone"] / 100.0))
+                        if tone.get("tone") is not None
+                        else None
+                    ),
+                    "match_score": None,
                     "category": "company" if matched_symbol else "theme",
                     "embedding_status": "pending",
                     "source": SOURCE,

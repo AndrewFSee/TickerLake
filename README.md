@@ -892,6 +892,8 @@ than a single venue's.
 | **Ken French** | Fama-French daily factors (FF5 + momentum, 1990-) | none |
 | **US Treasury** | Official daily par yield curve, all 14 tenors | none |
 | **CFTC** | Commitments of Traders, weekly positioning by category | none |
+| **Tiingo** | Independent check on *adjusted* prices and corporate actions | free |
+| **Marketaux** | Symbol-tagged news with per-entity sentiment | free |
 | **IEX DEEP** | L2 order book, on demand (`tickerlake l2`) | none |
 | *derived* | IV + Greeks, put/call ratios, ATM IV, skew | - |
 
@@ -907,6 +909,31 @@ curvature are exact rather than approximated from FRED's three points.
 **CFTC COT** is the only source here describing *who* is positioned: asset
 managers, leveraged money and dealers, weekly, for E-mini S&P 500 and the sector
 index futures.
+
+**Tiingo** checks *adjusted* prices rather than raw ones. Raw closes are the
+easy case - every vendor sees the same print, and Finnhub already agrees with
+yfinance to the cent. Adjustment is a *computation* over dividend and split
+history, so a vendor that misses a corporate action produces a series that looks
+entirely reasonable while being wrong for every prior date. With 15 splits among
+large caps since 2010, a missed one is a 4x or 10x step in a return series that
+nothing else here would catch. Tiingo publishes `adjOpen/High/Low/Close` plus
+per-bar `divCash` and `splitFactor`, where yfinance gives only an adjusted
+close. Current result: **125/125 closes and 125/125 adjusted closes agree**.
+
+**Marketaux** supplies the two things GDELT structurally cannot: per-entity
+`sentiment_score`, so an article can score differently for each company it
+mentions, and `match_score`, the publisher's own tagging confidence - the exact
+quantity the GDELT salience-offset heuristic approximates. The precision
+difference is measurable: of 6,646 GDELT articles, 5,559 are theme-only with no
+symbol; of 48 Marketaux articles, **0 are untagged**. It does not replace GDELT
+- the free tier is ~100 requests/day at 3 articles each - so GDELT provides
+breadth and Marketaux provides precision.
+
+One caveat on combining them: `sentiment` is normalised to -1..+1 for both, but
+the empirical distributions differ sharply. GDELT tone rarely leaves -10..+10,
+so normalised it clusters within +/-0.1, while Marketaux routinely reaches
++/-0.8. **Standardise per source before pooling**, or Marketaux will dominate
+any model using both.
 
 **Insider transactions** carry a trap worth knowing about. Finnhub's `share`
 field is the insider's holding *after* the trade, not the trade size; `change`
@@ -944,8 +971,7 @@ precomputed from the right one.
 
 **Free key required:**
 
-- **Tiingo** -- clean adjusted EOD; a third opinion for the price cross-check.
-- **Marketaux / NewsAPI** -- better symbol tagging than GDELT.
+- **NewsAPI** -- another tagged-news option, though Marketaux now covers this.
 
 **Derivable from data already collected:**
 

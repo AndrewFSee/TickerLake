@@ -26,6 +26,7 @@ import pandas as pd
 from tickerlake.fetchers.base import BaseFetcher, FetchResult
 from tickerlake.storage import paths as P
 from tickerlake.universe.sources import to_yahoo_symbol
+from tickerlake.utils.dates import as_date
 from tickerlake.utils.http import HttpClient, HttpError
 
 SOURCE = "finnhub"
@@ -114,6 +115,8 @@ class FinnhubFetcher(BaseFetcher):
                         # Finnhub supplies no tone; an embedding/sentiment pass
                         # can fill this in later.
                         "tone": None,
+                        "sentiment": None,
+                        "match_score": None,
                         "category": article.get("category") or "company",
                         "embedding_status": "pending",
                         "source": SOURCE,
@@ -271,7 +274,7 @@ class FinnhubFetcher(BaseFetcher):
         for row in df.itertuples():
             if pd.isna(row.close):
                 continue
-            out.setdefault(row.symbol, {})[_as_plain_date(row.date)] = float(row.close)
+            out.setdefault(row.symbol, {})[as_date(row.date)] = float(row.close)
         return out
 
     # --------------------------------------------------------------- helpers
@@ -290,19 +293,6 @@ class FinnhubFetcher(BaseFetcher):
         offset = (run_date.toordinal() * per_run) % len(members)
         rotated = members[offset:] + members[:offset]
         return rotated[:per_run]
-
-
-def _as_plain_date(value: Any) -> date:
-    """Coerce to a bare ``datetime.date``.
-
-    ``pd.Timestamp`` subclasses ``datetime``, which subclasses ``date``, so an
-    ``isinstance(value, date)`` guard passes for Timestamps and leaves them
-    unconverted -- and comparing a Timestamp to a date then raises. Exclude
-    ``datetime`` explicitly.
-    """
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    return pd.Timestamp(value).date()
 
 
 def _from_epoch(value: Any) -> datetime | None:
