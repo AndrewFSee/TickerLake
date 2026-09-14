@@ -406,3 +406,36 @@ def test_nothing_is_known_before_the_first_announcement(dated_lake):
 def test_empty_symbol_list_returns_an_empty_frame(dated_lake):
     with LakeQuery(dated_lake) as q:
         assert q.pit_earnings("2026-06-01", symbols=[]).empty
+
+
+def test_periods_predating_item_202_are_never_requested(tmp_path):
+    """Item 2.02 did not exist before the SEC renumbered 8-K items in 2004.
+
+    Such periods can never be matched, so asking about them spends requests and
+    warns on every run forever -- noise that would hide a real failure.
+    """
+    from tickerlake.fetchers.announcements import ITEM_202_INTRODUCED
+
+    paths = DatasetPaths(tmp_path)
+    paths.ensure_layout()
+    rows = [date(2000, 9, 30), date(2003, 6, 30), date(2025, 9, 30)]
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "SLB",
+                "record_type": "surprise",
+                "period": period,
+                "eps_actual": 0.175,
+                "announcement_date": None,
+                "source": "finnhub",
+                "ingested_at": datetime.now(UTC),
+            }
+            for period in rows
+        ]
+    )
+    ParquetWriter().write(df, P.EARNINGS, paths.earnings_file("surprises"), mode="overwrite")
+
+    pending = _fetcher(tmp_path)._unmatched_surprises()
+    assert len(pending) == 1, "only the period that could carry the item code"
+    assert as_date(pending.iloc[0]["period"]) == date(2025, 9, 30)
+    assert ITEM_202_INTRODUCED == date(2004, 8, 23)

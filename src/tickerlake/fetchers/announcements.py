@@ -71,6 +71,12 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 # The 8-K item meaning "we are reporting results".
 EARNINGS_ITEM = "2.02"
 
+# The SEC renumbered 8-K items on this date; before it, earnings releases were
+# Item 12 and no filing carries 2.02. Periods older than this can never be
+# matched, so asking about them costs requests and reports a warning on every
+# run in perpetuity -- noise that would mask a real failure later.
+ITEM_202_INTRODUCED = date(2004, 8, 23)
+
 
 class AnnouncementFetcher(BaseFetcher):
     """Attaches announcement dates to stored earnings surprises."""
@@ -199,16 +205,24 @@ class AnnouncementFetcher(BaseFetcher):
         the first pass and nearly free afterwards. ``resolve_all`` re-examines
         dated rows too: a change to the matching rule leaves already-stored
         dates wrong, and nothing else would ever revisit them.
+
+        Periods predating :data:`ITEM_202_INTRODUCED` are never requested, since
+        no filing can carry the item code that identifies them.
         """
         from tickerlake.storage.query import LakeQuery
 
-        predicate = "" if self.cfg("resolve_all", False) else " AND announcement_date IS NULL"
+        where = ["record_type = 'surprise'", "period >= ?"]
+        if not self.cfg("resolve_all", False):
+            where.append("announcement_date IS NULL")
         # Deliberately not caught. An unreadable earnings table is a real
         # failure, and swallowing it here made the stage report "every stored
         # surprise already has an announcement date" when the query had in fact
         # errored -- a silent wrong answer rather than a visible fault.
         with LakeQuery(self.paths.root) as q:
-            return q.sql(f"SELECT * FROM earnings WHERE record_type = 'surprise'{predicate}")
+            return q.sql(
+                f"SELECT * FROM earnings WHERE {' AND '.join(where)}",
+                [ITEM_202_INTRODUCED],
+            )
 
     def _cik_map(
         self, client: HttpClient, symbols: list[str], result: FetchResult
