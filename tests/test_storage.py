@@ -242,3 +242,60 @@ def test_pit_ohlcv_excludes_pre_membership_rows(lake, tmp_path):
     # March 1 predates membership, so a survivorship-safe panel must drop it.
     assert len(pit) == 2
     assert date(2024, 3, 1) not in set(pit["date"])
+
+
+# ------------------------------------------------- mixed date representations
+
+
+def _surprise(period, eps, announcement=None):
+    return {
+        "symbol": "AAPL",
+        "record_type": "surprise",
+        "period": period,
+        "fiscal_year": 2025,
+        "fiscal_quarter": 3,
+        "eps_estimate": 1.4,
+        "eps_actual": eps,
+        "eps_surprise_pct": 1.0,
+        "announcement_date": announcement,
+        "announcement_accession": None,
+        "source": "test",
+        "ingested_at": datetime.now(UTC),
+    }
+
+
+def test_merge_accepts_dates_and_timestamps_in_the_same_column(lake):
+    """A merge whose two sides carry different date representations.
+
+    The same logical column arrives in two shapes depending on where the frame
+    came from: reading the Parquet file yields ``datetime.date`` objects, while
+    a DuckDB query yields ``pandas.Timestamp``. Concatenating them produced one
+    object column holding both, and the next sort or de-duplication raised,
+    because a Timestamp and the date it represents do not compare. Every
+    enrichment pass -- read via DuckDB, write back through the writer -- hits
+    this, so the writer normalises rather than each caller remembering to.
+    """
+    paths, writer = lake
+    target = paths.earnings_file("surprises")
+
+    # Stored the way Parquet hands them back.
+    writer.write(
+        pd.DataFrame([_surprise(date(2025, 6, 30), 1.57), _surprise(date(2025, 9, 30), 1.85)]),
+        P.EARNINGS,
+        target,
+        mode="overwrite",
+    )
+
+    # Written back the way DuckDB hands them out, with an added announcement.
+    incoming = pd.DataFrame(
+        [
+            _surprise(pd.Timestamp("2025-06-30"), 1.57, date(2025, 7, 31)),
+            _surprise(pd.Timestamp("2025-09-30"), 1.85, date(2025, 10, 30)),
+        ]
+    )
+    writer.write(incoming, P.EARNINGS, target, mode="merge")
+
+    out = pq.read_table(target).to_pandas().sort_values("period")
+    assert len(out) == 2, "the two representations are one key, not two"
+    assert out["announcement_date"].notna().all()
+    assert out["eps_actual"].tolist() == [1.57, 1.85]

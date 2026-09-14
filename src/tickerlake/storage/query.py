@@ -73,6 +73,42 @@ class LakeQuery:
             return False
         return any(d.rglob("*.parquet"))
 
+    def _columns_on_disk(self, dataset: str) -> set[str]:
+        """Union of column names across a dataset's files."""
+        import pyarrow.parquet as pq
+
+        names: set[str] = set()
+        for path in (self.root / dataset).rglob("*.parquet"):
+            try:
+                names.update(pq.read_schema(path).names)
+            except Exception as exc:  # a partial file must not break the view
+                log.debug("could not read schema of %s: %s", path.name, exc)
+        return names
+
+    def _projection(self, dataset: str) -> str:
+        """Select list that fills in schema columns absent from the files.
+
+        Schemas gain fields over time, and files written before a field existed
+        do not carry it. Without this, adding a column breaks every query that
+        references it against older data -- with a binder error, or worse, a
+        caller that catches the error and reports "nothing to do".
+        """
+        schema = S.SCHEMAS.get(dataset)
+        if schema is None:
+            return "*"
+        present = self._columns_on_disk(dataset)
+        missing = [f for f in schema if f.name not in present]
+        if not missing:
+            return "*"
+        log.debug(
+            "%s: %d schema column(s) absent from stored files, projected as NULL: %s",
+            dataset,
+            len(missing),
+            ", ".join(f.name for f in missing),
+        )
+        nulls = ", ".join(f"CAST(NULL AS {_duckdb_type(f.type)}) AS {f.name}" for f in missing)
+        return f"*, {nulls}"
+
     def _register_views(self) -> None:
         """Create one view per dataset, typed-empty when no files exist yet."""
         for dataset in P.DATASETS:
@@ -81,7 +117,7 @@ class LakeQuery:
                     pattern = self.paths.dataset_glob_pattern(dataset)
                     self.con.execute(
                         f"CREATE OR REPLACE VIEW {dataset} AS "
-                        f"SELECT * FROM read_parquet('{pattern}', "
+                        f"SELECT {self._projection(dataset)} FROM read_parquet('{pattern}', "
                         f"hive_partitioning=false, union_by_name=true)"
                     )
                 else:
@@ -463,6 +499,59 @@ class LakeQuery:
             .drop(columns=["_rank"])
         )
         return df
+
+    def pit_earnings(
+        self,
+        as_of: date | str,
+        symbols: Iterable[str] | None = None,
+        quarters: int = 1,
+    ) -> pd.DataFrame:
+        """Earnings surprises as they were *known* on ``as_of``.
+
+        The same anti-lookahead rule as :meth:`pit_fundamentals`, applied to the
+        surprise table: filter on ``announcement_date``, never ``period``. A
+        quarter ending 2025-06-30 was not public until the 8-K landed on
+        2025-07-31, so a model keyed on ``period`` sees the beat a month before
+        it existed -- a shorter leak than fundamentals, and easier to miss for
+        exactly that reason.
+
+        Rows still lacking an announcement date are excluded rather than
+        assumed. An undated surprise is one whose 8-K could not be matched, and
+        guessing a date is how the bias gets back in.
+
+        ``quarters`` returns the N most recently announced periods per symbol,
+        for building a surprise history rather than a single snapshot.
+        """
+        as_of = _to_date(as_of)
+        where = [
+            "record_type = 'surprise'",
+            "announcement_date IS NOT NULL",
+            "announcement_date <= ?",
+        ]
+        params: list[Any] = [as_of]
+
+        if symbols is not None:
+            syms = [s.upper() for s in symbols]
+            if not syms:
+                return _empty_df(P.EARNINGS)
+            where.append(f"symbol IN ({','.join('?' * len(syms))})")
+            params.extend(syms)
+
+        return self.sql(
+            f"""
+            SELECT symbol, period, fiscal_year, fiscal_quarter,
+                   eps_estimate, eps_actual, eps_surprise, eps_surprise_pct,
+                   announcement_date, announcement_accession, source
+            FROM earnings
+            WHERE {" AND ".join(where)}
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY symbol
+                ORDER BY announcement_date DESC, period DESC
+            ) <= ?
+            ORDER BY symbol, announcement_date DESC
+            """,
+            [*params, max(1, int(quarters))],
+        )
 
     def fundamentals_concepts(self, symbol: str | None = None, limit: int = 50) -> pd.DataFrame:
         """Most-reported XBRL concepts, for discovering what is available."""

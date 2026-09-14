@@ -312,6 +312,37 @@ insider:
   symbols_per_run: 60
   lookback_days: 180
 
+announcements:
+  # Earnings ANNOUNCEMENT dates, from SEC 8-K Item 2.02 filings.
+  #
+  # Surprise rows carry `period` (the fiscal period end), which says nothing
+  # about when the number became public - Apple's June quarter was announced on
+  # 30 July. Keying a model on `period` leaks the surprise into the weeks before
+  # it existed. Finnhub's calendar cannot help: on the free tier it returns
+  # nothing for past ranges.
+  #
+  # Only symbols with still-undated surprises are fetched, so this is expensive
+  # on the first pass and nearly free in steady state.
+  enabled: true
+  requests_per_second: 5.0
+  symbols_per_run: 60
+  # `period` is a CALENDAR quarter end, so a company whose fiscal quarter closes
+  # earlier announces BEFORE its own label - General Mills' 2025-12-31 period was
+  # announced 2025-12-17. The window has to open before the label to catch it.
+  max_lead_days: 45
+  # An announcement more than this long after period end is not that period's.
+  max_lag_days: 120
+  # A filing further than this from the company's own typical offset is more
+  # likely an unrelated Item 2.02 (Goldman filed one a week before its real Q4
+  # release). Leave such a period undated rather than date it wrongly.
+  lag_tolerance_days: 45
+  # Fallback offset when a symbol has too little history to measure its own.
+  typical_lag_days: 30
+  # Re-examine surprises that already have a date. Off in steady state; turn on
+  # for one run after changing the matching rule, since nothing else revisits
+  # already-dated rows.
+  resolve_all: false
+
 tiingo:
   # Independent check on ADJUSTED prices, which is where vendors actually
   # diverge - raw closes are the easy case and already agree to the cent with
@@ -423,6 +454,7 @@ pipeline:
     - tiingo
     - earnings
     - insider
+    - announcements
     - gdelt
     - marketaux
     - finnhub
@@ -439,6 +471,7 @@ pipeline:
     yield_curve: 15
     cot: 20
     insider: 30
+    announcements: 30
     tiingo: 20
     marketaux: 20
     ohlcv: 60

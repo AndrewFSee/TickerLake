@@ -212,6 +212,15 @@ EARNINGS_SCHEMA = pa.schema(
         pa.field("revenue_estimate", pa.float64()),
         pa.field("revenue_actual", pa.float64()),
         pa.field("report_hour", pa.string()),
+        # When the result actually became public, from the SEC 8-K carrying
+        # Item 2.02 (Results of Operations and Financial Condition).
+        #
+        # `period` is the fiscal period end and says nothing about when the
+        # number was known: Apple's June quarter was announced on 30 July, a
+        # month later. Keying a model on `period` leaks the surprise into the
+        # weeks before it existed. This is the field to filter on.
+        pa.field("announcement_date", pa.date32(), nullable=True),
+        pa.field("announcement_accession", pa.string()),
         pa.field("strong_buy", pa.int32()),
         pa.field("buy", pa.int32()),
         pa.field("hold", pa.int32()),

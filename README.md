@@ -234,6 +234,70 @@ Two further traps worth knowing:
   the new one. Querying either alone silently loses about half the universe.
   `pit_revenue()` coalesces them.
 
+### Earnings announcement dates
+
+Surprise rows carry `period`, the fiscal period end, which says nothing about
+when the number became public. That is the same lookahead bias, in a dataset
+where it is easier to miss because the gap is weeks rather than months. Finnhub
+cannot close it: on the free tier its calendar returns nothing for past ranges.
+
+SEC 8-K **Item 2.02 (Results of Operations and Financial Condition)** can. The
+submissions API exposes item codes per filing, so earnings releases are directly
+identifiable, and `announcements` matches them onto stored periods. **690 of 695
+surprises across all 175 symbols are now dated**, median 29 days after period
+end.
+
+Getting the match right took two corrections that are worth recording, because
+both produced plausible-looking wrong answers rather than errors:
+
+- **`period` is a *calendar* quarter end, not a fiscal one.** General Mills
+  closes its quarters in August, November, February and May; Finnhub files them
+  under calendar quarter ends, so three of four are announced *before* the label
+  they carry. Requiring the 8-K to fall strictly after the period end skipped
+  every one of them and silently took the next quarter's instead -- dating all
+  four rows one quarter late, and recording a single 8-K as both Q3 and Q4.
+  **19 of 175 symbols (11%) have this shape**, and 73 rows legitimately carry a
+  negative lag.
+- **Not every Item 2.02 filing is an earnings release.** Goldman Sachs filed one
+  on 2026-01-08, a week before its actual Q4 release on 2026-01-15; Honeywell
+  filed decoys on either side of two real releases. Taking the earliest filing
+  in the window picks the decoy -- seven days of lookahead.
+
+What separates a release from a decoy is cadence: a company announces at a
+near-constant offset from its period label. So the offset is measured from the
+company's own filing history, each period takes the filing closest to its
+expected date, no filing may serve two periods, and the estimate is iterated --
+because the first pass can itself claim a decoy, and correcting the pairing
+corrects the estimate. A filing too far off the company's own cadence is left
+unmatched, since a wrong date reintroduces the bias this exists to remove.
+
+Validation after the fix, against filings read directly from SEC:
+
+| | |
+|---|---|
+| Rows deviating >30 days from their own symbol's median lag | **0** of 690 |
+| Filings claimed by two periods | **0** |
+| Lag band | −43 to +57 days |
+| Still undated | 5 rows, all periods from 2000 |
+
+The undated five are the system working: Item 2.02 did not exist before the SEC
+renumbered 8-K items in August 2004, and the submissions API returns only a
+filer's most recent ~1000 filings. An undated surprise is visibly unusable; a
+wrongly dated one is not.
+
+```python
+q.pit_earnings("2026-07-01", symbols=["HON"])
+#  -> period 2026-03-31, announced 2026-04-23, EPS 4.90
+#     (the June quarter had closed, but was not announced until 23 July)
+
+q.pit_earnings("2026-08-01", symbols=["HON"])
+#  -> period 2026-06-30, announced 2026-07-23, EPS 4.52
+```
+
+`pit_earnings()` filters on `announcement_date` and never `period`, and excludes
+undated rows rather than assuming a date. Pass `quarters=N` for a surprise
+history instead of a single snapshot.
+
 ---
 
 ## Storage layout

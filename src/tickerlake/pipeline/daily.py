@@ -23,6 +23,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from tickerlake.config import Config
+from tickerlake.fetchers.announcements import AnnouncementFetcher
 from tickerlake.fetchers.base import FetchResult
 from tickerlake.fetchers.earnings import EarningsFetcher
 from tickerlake.fetchers.finnhub import FinnhubFetcher
@@ -60,6 +61,7 @@ FETCHERS = {
     "finra": FinraShortVolumeFetcher,
     "earnings": EarningsFetcher,
     "insider": InsiderFetcher,
+    "announcements": AnnouncementFetcher,
     "factors": FamaFrenchFetcher,
     "yield_curve": TreasuryCurveFetcher,
     "cot": CftcCotFetcher,

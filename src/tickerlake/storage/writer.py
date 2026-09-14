@@ -122,6 +122,9 @@ class ParquetWriter:
         except Exception as exc:  # corrupt/partial file: prefer new data over crashing
             log.error("could not read %s for merge (%s); overwriting instead", path.name, exc)
             return df
+
+        existing = _align_temporal(existing, dataset)
+        df = _align_temporal(df, dataset)
         # New rows last so keep="last" in _dedupe prefers freshly fetched values.
         return pd.concat([existing, df], ignore_index=True)
 
@@ -203,6 +206,35 @@ class ParquetWriter:
                     tmp.unlink()
                 except OSError:
                     pass
+
+
+def _align_temporal(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
+    """Force schema date/timestamp columns to a single representation.
+
+    A date column reaches this code in two shapes depending on where the frame
+    came from: ``pq.read_table`` yields ``datetime.date`` objects, while a
+    DuckDB query yields ``pandas.Timestamp``. Concatenating the two produces one
+    object column holding both, and the next sort or de-duplication raises -
+    Timestamp and date refuse to compare - somewhere far from the cause.
+
+    Normalising both sides to datetime64 before they meet is what stops a
+    merge-mode write from depending on which reader produced its input.
+    """
+    schema = S.SCHEMAS.get(dataset)
+    if schema is None or df.empty:
+        return df
+
+    out = df
+    for field in schema:
+        name = field.name
+        if name not in out.columns:
+            continue
+        if pa.types.is_date32(field.type) or pa.types.is_timestamp(field.type):
+            if out is df:
+                out = df.copy()
+            utc = bool(pa.types.is_timestamp(field.type) and field.type.tz)
+            out[name] = pd.to_datetime(out[name], errors="coerce", utc=utc)
+    return out
 
 
 # --------------------------------------------------------------- casting
