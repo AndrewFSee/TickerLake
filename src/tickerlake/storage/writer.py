@@ -125,6 +125,7 @@ class ParquetWriter:
 
         existing = _align_temporal(existing, dataset)
         df = _align_temporal(df, dataset)
+        df = _carry_forward(df, existing, dataset)
         # New rows last so keep="last" in _dedupe prefers freshly fetched values.
         return pd.concat([existing, df], ignore_index=True)
 
@@ -206,6 +207,55 @@ class ParquetWriter:
                     tmp.unlink()
                 except OSError:
                     pass
+
+
+def _carry_forward(df: pd.DataFrame, existing: pd.DataFrame, dataset: str) -> pd.DataFrame:
+    """Keep stored values for columns the incoming frame does not carry.
+
+    A fetcher that has never heard of a column must not be able to erase it.
+    Without this, any stage writing to a shared dataset silently blanks every
+    column it does not itself produce: ``earnings`` re-fetching a surprise row
+    wiped the ``announcement_date`` that ``announcements`` had just resolved,
+    because :func:`pandas.concat` unions the columns and the incoming row --
+    preferred by ``keep="last"`` -- brought a NaN to the merge.
+
+    The distinction that matters is *absent* versus *null*. A column missing
+    from the frame is an absence of information, so the stored value stands. A
+    column present and null is a statement that the value is unknown, and it
+    overwrites. Only the first case is handled here.
+
+    Rows whose key is new to the file get NaN, which is correct: there is no
+    stored value to preserve.
+    """
+    rule = S.RULES.get(dataset)
+    if rule is None or not rule.unique_on or df.empty or existing.empty:
+        return df
+
+    absent = [c for c in existing.columns if c not in df.columns]
+    if not absent:
+        return df
+
+    keys = list(rule.unique_on)
+    if any(k not in df.columns or k not in existing.columns for k in keys):
+        # Without the full key there is no way to say which stored row a given
+        # incoming row corresponds to, so carrying anything over would be a
+        # guess. Leave the frame alone.
+        return df
+
+    # Duplicate keys would make the lookup ambiguous and raise on reindex. The
+    # file is written de-duplicated, but a hand-edited or legacy file may not
+    # be, so match _dedupe and take the last.
+    src = existing.drop_duplicates(subset=keys, keep="last").set_index(keys)
+    index = pd.MultiIndex.from_frame(df[keys]) if len(keys) > 1 else pd.Index(df[keys[0]])
+
+    out = df.copy()
+    for column in absent:
+        # to_numpy() because df's own index is unrelated to the lookup index;
+        # aligning on it would scatter the values.
+        out[column] = src[column].reindex(index).to_numpy()
+
+    log.debug("%s: carried %d stored column(s) through merge: %s", dataset, len(absent), absent)
+    return out
 
 
 def _align_temporal(df: pd.DataFrame, dataset: str) -> pd.DataFrame:

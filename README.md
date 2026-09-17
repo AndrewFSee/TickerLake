@@ -591,6 +591,35 @@ class AlpacaFetcher(BaseFetcher):
         result.record_write(write)  # validate + write happen inside
 ```
 
+### What `mode="merge"` does to columns you omit
+
+Several stages write to the same dataset, each knowing only about its own
+columns, so the writer distinguishes **absent** from **null**:
+
+| Incoming frame | Result |
+|---|---|
+| Column missing entirely | Stored value is **kept** |
+| Column present, value null | Stored value is **overwritten** with null |
+| Column present, has a value | Stored value is overwritten |
+
+A missing column is an absence of information; a null is a statement that the
+value is unknown. Only the second can clear a stored value.
+
+This is not academic. `earnings` and `announcements` both write surprise rows
+keyed on `(symbol, record_type, period)`, and `earnings.py` has never heard of
+`announcement_date`. Without the distinction, `pandas.concat` unions the
+columns, the incoming row arrives carrying a NaN for a field it does not know
+about, and `keep="last"` hands it the win -- **replaying one night's earnings
+run against the real file destroys 237 announcement dates.** Only stage
+ordering hid it: `announcements` runs later in the same pipeline and repaired
+the damage each night, so every integrity check passed and the enrichment would
+have silently decayed the moment that stage failed or moved.
+
+Matching is per natural key, so a row whose key is new to the file gets null --
+there is nothing stored to preserve. Datasets that declare no `unique_on`
+(`filings_facts`, `quality`, `universe_history`) have nothing to match on and
+are passed through untouched; they are written with `mode="overwrite"` anyway.
+
 ---
 
 ## Implied volatility and Greeks
