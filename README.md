@@ -298,6 +298,77 @@ q.pit_earnings("2026-08-01", symbols=["HON"])
 undated rows rather than assuming a date. Pass `quarters=N` for a surprise
 history instead of a single snapshot.
 
+### Adjusted prices decay, so they are re-derived
+
+`adj_close` is a running total over the *future*: the value for a 2015 session
+depends on every dividend paid since. The fetcher writes a row when its session
+is current -- when the adjustment is 1.0 by definition -- and the incremental
+lookback only revisits the last few sessions, so the row then **freezes**. Every
+later dividend should reach back and lower it, and none of them do.
+
+The cross-source check is what caught it: three Tiingo comparisons failed on CCI
+with an identical 1.43% gap. Crown Castle's rows from a *year* earlier were
+understated by the same 1.45% -- one missed dividend, propagated across the
+symbol's entire history. At the point it was found, **300k rows across 75
+symbols** were stale, and it compounds every ex-dividend date.
+
+Two things make it fixable. The events themselves do not decay -- a dividend is
+a fact about one day, not a running total -- and 32k dividend events and 342
+splits are stored per bar. And `close` is already split-adjusted, because the
+fetcher uses `auto_adjust=False`, which back-adjusts Close for splits and puts
+only dividends into Adj Close.
+
+That second point is a trap. Re-applying the split ratio double-counts it: 3M's
+2024 Solventum spin-off is recorded as `stock_splits = 1.196`, and applying it
+moved the series by **17%**. But rebuilding purely from our own dividends is
+wrong too -- Danaher's 2016 Fortive spin-off is booked as a $24.56 dividend
+*and* a 1.319 split, and Yahoo's factor across it matches neither reading of
+that pair, so a full rebuild moved Danaher's pre-2016 history by **13.4%**.
+
+So neither source is taken on faith. The adjustment ratio can only fall as you
+go back in time -- each earlier session carries strictly more future dividends --
+so the defensible value for a row is the **most adjusted one any later row
+implies**:
+
+```
+correct(t) = min over u >= t of [ stored(u) x product of dividend factors over (t, u] ]
+```
+
+Where the vendor is stale, a later row plus the dividends between them wins.
+Where our actions are incomplete, the vendor's own deeper adjustment wins. One
+rule corrects both failures, it is monotone by construction, and running it
+twice changes nothing.
+
+Measured against Tiingo after the repair:
+
+| symbol | stored error before | after |
+|---|---|---|
+| CCI | 1.3130% | **0.1703%** |
+| KO | 0.6142% | **0.0173%** |
+| NVDA | 0.1121% | **0.0004%** |
+| MMM | 0.9304% | 0.9304% (spin-off convention, preserved) |
+
+Provably-stale rows fell from **9,725 across 149 symbols to 477 across 74**, and
+every one that remains is below the 0.05% write tolerance. `repair-adjustments`
+runs nightly as a second action on the daily task, so the column is never more
+than one session out of date.
+
+**`adj_close` is also lookahead-contaminated by construction** -- its value for
+2025-09-15 encodes dividends that had not happened yet on that date. For
+point-in-time work use `adjusted_ohlcv(as_of=...)`, which builds the factor from
+dividends known by then and nothing later, the same discipline as
+`pit_fundamentals` and `pit_earnings`:
+
+```python
+q.adjusted_ohlcv(symbols=["CCI"], start="2025-09-15", end="2025-09-15", as_of="2025-10-01")
+#  -> adj_close 93.57  (no later dividend was knowable yet)
+
+q.adjusted_ohlcv(symbols=["CCI"], start="2025-09-15", end="2025-09-15")
+#  -> adj_close 88.99  (every dividend since)
+```
+
+`adjustment_drift()` reports which symbols have decayed, if you want to watch it.
+
 ---
 
 ## Storage layout

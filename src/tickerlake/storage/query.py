@@ -263,6 +263,255 @@ class LakeQuery:
             params,
         )
 
+    # Dividends only. ``close`` already carries split and spin-off adjustments:
+    # the fetcher calls yfinance with ``auto_adjust=False``, which back-adjusts
+    # Close for splits and puts dividends only into Adj Close. Re-applying the
+    # split ratio here double-counts it -- 3M's 2024 Solventum spin-off is
+    # recorded as ``stock_splits = 1.196`` and applying it moved the series by
+    # 17%. Dividend amounts are on the same split-adjusted scale (3M's $1.51
+    # shows as 1.262542 = 1.51 / 1.196), so the ratio below is consistent.
+    _ADJ_CTE = """
+        WITH src AS (
+            SELECT {projection} FROM read_parquet(
+                {pattern}, hive_partitioning=false, union_by_name=true)
+            WHERE {where}
+        ),
+        prev AS (
+            SELECT *, LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS _prev_close
+            FROM src
+        ),
+        fac AS (
+            SELECT *,
+                CASE
+                    WHEN COALESCE(dividends, 0) > 0
+                     AND _prev_close > 0
+                     AND dividends < _prev_close
+                    THEN 1 - dividends / _prev_close
+                    ELSE 1
+                END AS _pf
+            FROM prev
+        ),
+        cum AS (
+            SELECT *,
+                -- Product of every factor STRICTLY AFTER this row. A windowed
+                -- product() is not available, so sum the logs.
+                EXP(COALESCE(SUM(LN(_pf)) OVER (
+                    PARTITION BY symbol ORDER BY date
+                    ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+                ), 0)) AS adj_factor
+            FROM fac
+        )
+    """
+
+    def adjusted_ohlcv(
+        self,
+        symbols: Iterable[str] | None = None,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        as_of: date | str | None = None,
+    ) -> pd.DataFrame:
+        """OHLCV with the dividend adjustment computed, not read off the file.
+
+        The stored ``adj_close`` cannot be trusted. It is written when a session
+        is current -- at which point the adjustment is 1.0 by definition -- and
+        then frozen, because the incremental lookback only ever revisits the
+        last few sessions. Every dividend after that should retroactively lower
+        it and never does, so the column is correct on the day it lands and
+        decays from then on. Crown Castle's year-old rows were understated by
+        1.45%, one missed dividend, across the symbol's entire history.
+
+        Recomputing from ``close`` and the stored ``dividends`` is exact: the
+        corporate actions themselves are captured completely (32k dividend
+        events, 342 splits) and they do not go stale, because an event is a fact
+        about one day rather than a running total.
+
+        ``as_of`` makes it point-in-time. The conventional adjusted close is a
+        *future-dependent* quantity -- the value for 2025-09-15 encodes
+        dividends that had not happened yet on that date -- so feeding it to a
+        model leaks the future in exactly the way :meth:`pit_fundamentals` and
+        :meth:`pit_earnings` exist to prevent. Passing ``as_of`` builds the
+        factor from dividends known by then and nothing later. Leaving it None
+        gives the conventional series, adjusted to the newest data held.
+
+        Returns the raw columns plus ``adj_factor`` and ``adj_open`` /
+        ``adj_high`` / ``adj_low`` / ``adj_close``. Volume is not adjusted:
+        ``close`` is already split-adjusted, so there is no split left to apply.
+        """
+        start = _to_date(start) if start is not None else None
+        end = _to_date(end) if end is not None else None
+        as_of = _to_date(as_of) if as_of is not None else None
+
+        # The factor for a 2015 row depends on every dividend between then and
+        # ``as_of``, so the scan has to reach forward past ``end``.
+        pattern = self._ohlcv_globs(start, as_of)
+        if pattern is None:
+            return _empty_df(P.OHLCV)
+
+        where, params = ["1=1"], []
+        if symbols is not None:
+            syms = [s.upper() for s in symbols]
+            if not syms:
+                return _empty_df(P.OHLCV)
+            where.append(f"symbol IN ({','.join('?' * len(syms))})")
+            params.extend(syms)
+        if start is not None:
+            where.append("date >= ?")
+            params.append(start)
+        if as_of is not None:
+            # Nothing after as_of may inform the factor.
+            where.append("date <= ?")
+            params.append(as_of)
+
+        outer, outer_params = ["1=1"], []
+        if end is not None:
+            outer.append("date <= ?")
+            outer_params.append(end)
+
+        cte = self._ADJ_CTE.format(
+            pattern=pattern,
+            projection=self._projection(P.OHLCV),
+            where=" AND ".join(where),
+        )
+        return self.sql(
+            f"""
+            {cte}
+            SELECT symbol, date, open, high, low, close, volume,
+                   dividends, stock_splits, adj_factor,
+                   open  * adj_factor AS adj_open,
+                   high  * adj_factor AS adj_high,
+                   low   * adj_factor AS adj_low,
+                   close * adj_factor AS adj_close,
+                   source, ingested_at
+            FROM cum
+            WHERE {" AND ".join(outer)}
+            ORDER BY symbol, date
+            """,
+            [*params, *outer_params],
+        )
+
+    _CORRECTED_CTE = """
+        WITH src AS (
+            SELECT {projection} FROM read_parquet(
+                {pattern}, hive_partitioning=false, union_by_name=true)
+            WHERE close > 0 AND adj_close > 0
+        ),
+        prev AS (
+            SELECT *, LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS _prev_close
+            FROM src
+        ),
+        fac AS (
+            SELECT *,
+                CASE
+                    WHEN COALESCE(dividends, 0) > 0
+                     AND _prev_close > 0
+                     AND dividends < _prev_close
+                    THEN 1 - dividends / _prev_close
+                    ELSE 1
+                END AS _pf
+            FROM prev
+        ),
+        logs AS (
+            SELECT *,
+                -- P: log-product of every factor strictly after this row.
+                COALESCE(SUM(LN(_pf)) OVER (
+                    PARTITION BY symbol ORDER BY date
+                    ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+                ), 0) AS _p,
+                -- S: log of the ratio the vendor actually stored.
+                LN(adj_close / close) AS _s
+            FROM fac
+        ),
+        best AS (
+            -- correct(t) = MIN over u >= t of [ stored(u) * product of factors
+            -- over (t, u] ], which rearranges to exp(P(t) + min(S(u) - P(u))).
+            SELECT *, MIN(_s - _p) OVER (
+                PARTITION BY symbol ORDER BY date
+                ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+            ) AS _best
+            FROM logs
+        ),
+        joined AS (
+            SELECT symbol, date, close, adj_close AS stored,
+                   EXP(_p + _best) AS ratio,
+                   close * EXP(_p + _best) AS adj_close
+            FROM best
+        )
+    """
+
+    def corrected_adjustments(self, symbols: Iterable[str] | None = None) -> pd.DataFrame:
+        """``(symbol, date, close, stored, ratio, adj_close)`` -- the repair target.
+
+        The stored ``adj_close`` decays. It is written when a session is current,
+        when the adjustment is 1.0 by definition, and the incremental lookback
+        only revisits the last few sessions, so the row then freezes and every
+        later dividend fails to reach back. Crown Castle's year-old rows were
+        understated by 1.45%, one missed dividend, across its whole history.
+
+        Rebuilding the series from our own actions instead is not safe either.
+        The stored column encodes vendor handling this lake cannot reproduce:
+        Danaher's 2016 Fortive spin-off is recorded as a $24.56 dividend *and* a
+        1.319 split, and Yahoo's factor across it matches neither reading of that
+        pair. A full rebuild moved Danaher's pre-2016 history by 13.4%.
+
+        So take neither on faith. The adjustment ratio can only fall as you go
+        back in time -- each earlier session carries strictly more future
+        dividends -- so the defensible value for a row is the *most adjusted*
+        one implied by any later row. Where the vendor is stale, a later row
+        plus the dividends between them wins. Where our actions are incomplete,
+        the vendor's own deeper adjustment wins. Both failures are corrected by
+        the same rule, and applying it twice changes nothing.
+        """
+        pattern = self._ohlcv_globs(None, None)
+        cols = ["symbol", "date", "close", "stored", "ratio", "adj_close"]
+        if pattern is None:
+            return pd.DataFrame(columns=cols)
+
+        where, params = ["1=1"], []
+        if symbols is not None:
+            syms = [s.upper() for s in symbols]
+            if not syms:
+                return pd.DataFrame(columns=cols)
+            where.append(f"symbol IN ({','.join('?' * len(syms))})")
+            params.extend(syms)
+
+        cte = self._CORRECTED_CTE.format(pattern=pattern, projection=self._projection(P.OHLCV))
+        return self.sql(
+            f"""
+            {cte}
+            SELECT symbol, date, close, stored, ratio, adj_close
+            FROM joined WHERE {" AND ".join(where)}
+            ORDER BY symbol, date
+            """,
+            params,
+        )
+
+    def adjustment_drift(self, tolerance: float = 0.0005) -> pd.DataFrame:
+        """Per-symbol disagreement between the stored and the defensible series.
+
+        A symbol appears once a dividend has landed since its older rows were
+        written. ``max_drift_pct`` is how far the stored column has decayed.
+        """
+        pattern = self._ohlcv_globs(None, None)
+        cols = ["symbol", "rows", "stale_rows", "max_drift_pct"]
+        if pattern is None:
+            return pd.DataFrame(columns=cols)
+
+        cte = self._CORRECTED_CTE.format(pattern=pattern, projection=self._projection(P.OHLCV))
+        return self.sql(
+            f"""
+            {cte}
+            SELECT symbol,
+                   COUNT(*) AS rows,
+                   COUNT(*) FILTER (WHERE ABS(adj_close - stored) / stored >= ?) AS stale_rows,
+                   ROUND(MAX(100 * ABS(adj_close - stored) / stored), 4) AS max_drift_pct
+            FROM joined
+            GROUP BY symbol
+            HAVING stale_rows > 0
+            ORDER BY max_drift_pct DESC
+            """,
+            [tolerance],
+        )
+
     def pit_ohlcv(
         self,
         start: date | str,

@@ -100,13 +100,25 @@ catch {
     $LogonNote = 'runs ONLY while you are logged on (Interactive)'
 }
 
+# A second action, run after the collection finishes. `adj_close` is a running
+# total over the future: a row is written when its session is current, when the
+# adjustment is 1.0 by definition, and then freezes, so every dividend paid
+# afterwards should reach back and lower it and none of them do. Left alone the
+# column decays a little further every ex-dividend date. Re-deriving it takes
+# about twenty seconds against the whole lake, so it runs nightly rather than
+# weekly and the column is never more than one session out of date.
+$AdjustAction = New-ScheduledTaskAction `
+    -Execute $Python `
+    -Argument '-m tickerlake.cli repair-adjustments' `
+    -WorkingDirectory $ProjectRoot
+
 Register-ScheduledTask `
     -TaskName 'TickerLake-Daily' `
-    -Action $DailyAction `
+    -Action @($DailyAction, $AdjustAction) `
     -Trigger $DailyTrigger `
     -Settings $Settings `
     -Principal $Principal `
-    -Description 'TickerLake daily market data collection (OHLCV, options chains, filings, macro, news).' `
+    -Description 'TickerLake daily collection (OHLCV, options, filings, macro, news), then dividend-adjustment refresh.' `
     -Force | Out-Null
 
 Write-Output "Registered TickerLake-Daily (weekdays at $DailyTime) - $LogonNote."

@@ -379,6 +379,18 @@ def cmd_compact(args: argparse.Namespace) -> int:
     return 0 if all(not r.errors for r in results) else 1
 
 
+def cmd_repair_adjustments(args: argparse.Namespace) -> int:
+    """Bring the stored adj_close up to date with dividends paid since."""
+    from tickerlake.pipeline.adjustments import AdjustmentRepair
+
+    config = _bootstrap(args)
+    result = AdjustmentRepair(config).run(tolerance=args.tolerance, dry_run=args.dry_run)
+    print(result.summary())
+    for err in result.errors[:10]:
+        print(f"  ERROR: {err}")
+    return 0 if not result.errors else 1
+
+
 def cmd_verify_membership(args: argparse.Namespace) -> int:
     """Rebuild membership from dated snapshots and diff against the stored table."""
     from tickerlake.universe import sources as SRC
@@ -558,6 +570,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", help="comma-separated datasets, default from config")
     p.add_argument("--force", action="store_true", help="ignore the minimum-age window")
     p.set_defaults(func=cmd_compact)
+
+    p = sub.add_parser(
+        "repair-adjustments",
+        help="bring stored adj_close up to date with dividends paid since it was written",
+    )
+    p.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
+    p.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.0005,
+        help="relative difference below which a row is left alone (default 0.0005)",
+    )
+    p.set_defaults(func=cmd_repair_adjustments)
 
     p = sub.add_parser("verify-membership", help="cross-check membership against dated snapshots")
     p.set_defaults(func=cmd_verify_membership)
