@@ -50,6 +50,20 @@ ohlcv:
   # Backfill uses larger, slower batches since it is a one-time cost.
   backfill_batch_size: 25
   backfill_throttle_seconds: 2.0
+  # A symbol joining the index mid-quarter arrives with only the bars collected
+  # since it joined - Bloom Energy and P entered on 2026-09-21 with five each.
+  # Nothing fails, which is the problem: the symbol is simply short and any
+  # feature needing a lookback has nothing to work with. Any symbol whose
+  # earliest stored bar is newer than this gets the full range instead of the
+  # lookback window. The test is on recency rather than row count so it stops
+  # firing by itself once the history lands.
+  recent_history_days: 30
+  # A reconstitution moves a handful of names. If nearly the whole universe
+  # looks new the lake is empty rather than the index rewritten - a fresh
+  # install, or data_root pointed somewhere unexpected - and a nightly run is
+  # the wrong place to discover that. Above this, the newcomer pass is skipped
+  # with a warning pointing at `tickerlake backfill ohlcv`.
+  max_newcomers: 25
 
 etfs:
   # ETFs are tracked for collection but are NOT index constituents. They live

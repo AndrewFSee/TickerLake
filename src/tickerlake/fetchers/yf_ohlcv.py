@@ -28,9 +28,13 @@ import yfinance as yf
 from tickerlake.fetchers.base import BaseFetcher, FetchResult
 from tickerlake.storage import paths as P
 from tickerlake.universe.sources import to_yahoo_symbol
+from tickerlake.utils.dates import as_date
 from tickerlake.utils.throttle import AdaptiveThrottle, is_rate_limit_error
 
 SOURCE = "yfinance"
+
+# Plan label for the newcomer pass, matched on in a couple of places.
+NEWCOMER_LABEL = "backfilling newcomers"
 
 # Canonical output columns in schema order (minus the constant ones).
 _FIELD_MAP = {
@@ -64,30 +68,30 @@ class YFinanceOHLCVFetcher(BaseFetcher):
             result.add_warning("no symbols to fetch; is the membership table seeded?")
             return
 
+        backfill_start = _as_date(self.cfg("start_date", "2010-01-01"))
+        end = run_date + timedelta(days=1)
+
         if self.backfill:
-            start = _as_date(self.cfg("start_date", "2010-01-01"))
-            end = run_date + timedelta(days=1)
+            plans = [("backfilling", symbols, backfill_start)]
             batch_size = int(self.cfg("backfill_batch_size", 25))
             throttle = float(self.cfg("backfill_throttle_seconds", 2.0))
-            mode = "merge"
         else:
             # Five calendar days comfortably covers a long weekend plus a holiday,
             # so a run that is skipped for a couple of days still self-heals.
-            start = run_date - timedelta(days=int(self.cfg("lookback_days", 5)))
-            end = run_date + timedelta(days=1)
+            lookback = run_date - timedelta(days=int(self.cfg("lookback_days", 5)))
             batch_size = int(self.cfg("batch_size", 50))
             throttle = float(self.cfg("throttle_seconds", 1.0))
-            mode = "merge"
 
-        self.log.info(
-            "%s %d symbols from %s to %s (batch=%d, throttle=%.1fs)",
-            "backfilling" if self.backfill else "fetching",
-            len(symbols),
-            start,
-            end - timedelta(days=1),
-            batch_size,
-            throttle,
-        )
+            newcomers = self._newcomers(symbols, run_date, result)
+            regular = [s for s in symbols if s not in newcomers]
+            plans = [("fetching", regular, lookback)]
+            if newcomers:
+                plans.append((NEWCOMER_LABEL, newcomers, backfill_start))
+                self.log.info(
+                    "%d symbol(s) have no history to speak of and will be backfilled: %s",
+                    len(newcomers),
+                    ", ".join(newcomers[:10]) + ("..." if len(newcomers) > 10 else ""),
+                )
 
         limiter = AdaptiveThrottle(
             base_interval=throttle,
@@ -99,6 +103,143 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
         frames: list[pd.DataFrame] = []
         observations: dict[str, date | None] = {}
+        backfilled: list[str] = []
+
+        for label, group, group_start in plans:
+            if not group:
+                continue
+            # Smaller batches for newcomers: a full-history request per symbol is
+            # far heavier than a five-day window.
+            size = min(batch_size, 25) if label == NEWCOMER_LABEL else batch_size
+            self.log.info(
+                "%s %d symbols from %s to %s (batch=%d, throttle=%.1fs)",
+                label,
+                len(group),
+                group_start,
+                end - timedelta(days=1),
+                size,
+                throttle,
+            )
+            self._fetch_range(group, group_start, end, size, limiter, result, frames, observations)
+            if label == NEWCOMER_LABEL:
+                backfilled = list(group)
+
+        if not frames:
+            result.add_error("no OHLCV data returned for any symbol")
+            self._record_observations(observations, result)
+            return
+
+        combined = pd.concat(frames, ignore_index=True)
+        self._write_by_month(combined, run_date, "merge", result)
+        self._record_observations(observations, result)
+
+        result.details.update(
+            {
+                "symbols_requested": len(symbols),
+                "symbols_with_data": result.items_succeeded,
+                "date_range": f"{combined['date'].min()} .. {combined['date'].max()}",
+                "throttle": limiter.stats(),
+            }
+        )
+        if backfilled:
+            result.details["backfilled_newcomers"] = backfilled
+
+    # ------------------------------------------------------------- newcomers
+
+    def _newcomers(self, symbols: list[str], run_date: date, result: FetchResult) -> list[str]:
+        """Symbols to backfill today, with a ceiling on how many.
+
+        A reconstitution moves a handful of names. If nearly the whole universe
+        looks new, the lake is empty rather than the index rewritten -- a fresh
+        install, or a data directory pointed somewhere unexpected -- and turning
+        the nightly run into a full-universe backfill is the wrong response to
+        that. ``tickerlake backfill ohlcv`` is the deliberate way to do it.
+        """
+        found = self._needs_history(symbols, run_date)
+
+        # Only names currently in the index. The tracked universe also carries
+        # every symbol ever removed, and the delisted ones have no history for
+        # the same reason they have no future: the vendor will not serve it.
+        # AGL Resources (GAS) left the index in 2016 with zero bars stored, and
+        # without this it would be re-requested every night forever.
+        if self.tracker is not None and found:
+            current = set(self.tracker.current_members())
+            skipped = [s for s in found if s not in current]
+            if skipped:
+                self.log.debug(
+                    "%d symbol(s) lack history but are no longer index members: %s",
+                    len(skipped),
+                    ", ".join(skipped[:10]),
+                )
+            found = [s for s in found if s in current]
+
+        ceiling = int(self.cfg("max_newcomers", 25))
+        if len(found) > ceiling:
+            result.add_warning(
+                f"{len(found)} symbols have no stored history, above the {ceiling} "
+                "expected from a reconstitution; skipping the newcomer backfill. "
+                "Run `tickerlake backfill ohlcv` if this lake is genuinely empty."
+            )
+            self.log.warning(
+                "%d symbols look new (ceiling %d); not backfilling them in a daily run",
+                len(found),
+                ceiling,
+            )
+            return []
+        return found
+
+    def _needs_history(self, symbols: list[str], run_date: date) -> list[str]:
+        """Symbols whose stored history is too short to be their real history.
+
+        A name joining the index mid-quarter arrives with only the bars collected
+        since it joined. Bloom Energy and P entered on 2026-09-21 with five bars
+        each, reaching back only to the day the universe first saw them. Nothing
+        failed -- that is the problem. The symbol is simply short, so any feature
+        needing a lookback has nothing to compute from, and the gap shows up only
+        if someone thinks to look.
+
+        The test is on *recency* rather than row count so that it stops firing by
+        itself: once the history is fetched the earliest bar moves back years and
+        the symbol drops out. A genuinely recent listing keeps qualifying for
+        ``recent_history_days`` and then stops, costing one small extra request a
+        day meanwhile and fetching exactly the short history it really has.
+        """
+        if not symbols:
+            return []
+        from tickerlake.storage.query import LakeQuery
+
+        cutoff = run_date - timedelta(days=int(self.cfg("recent_history_days", 30)))
+        placeholders = ",".join("?" * len(symbols))
+        try:
+            with LakeQuery(self.paths.root) as q:
+                stored = q.sql(
+                    "SELECT symbol, MIN(date) AS first_bar FROM ohlcv "
+                    f"WHERE symbol IN ({placeholders}) GROUP BY symbol",
+                    list(symbols),
+                )
+        except Exception as exc:
+            # A lake too young to query is not a reason to derail the run; the
+            # first backfill populates everything anyway.
+            self.log.debug("could not check stored history: %s", exc)
+            return []
+
+        earliest = {str(row.symbol): as_date(row.first_bar) for row in stored.itertuples()}
+        return [s for s in symbols if (earliest.get(s) or date.max) >= cutoff]
+
+    # ------------------------------------------------------------- downloads
+
+    def _fetch_range(
+        self,
+        symbols: list[str],
+        start: date,
+        end: date,
+        batch_size: int,
+        limiter: AdaptiveThrottle,
+        result: FetchResult,
+        frames: list[pd.DataFrame],
+        observations: dict[str, date | None],
+    ) -> None:
+        """Download one symbol group over one date range, batch by batch."""
         batches = [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
 
         for n, batch in enumerate(batches, 1):
@@ -142,26 +283,6 @@ class YFinanceOHLCVFetcher(BaseFetcher):
                 len(returned),
                 len(batch),
             )
-
-        if not frames:
-            result.add_error("no OHLCV data returned for any symbol")
-            self._record_observations(observations, result)
-            return
-
-        combined = pd.concat(frames, ignore_index=True)
-        self._write_by_month(combined, run_date, mode, result)
-        self._record_observations(observations, result)
-
-        result.details.update(
-            {
-                "symbols_requested": len(symbols),
-                "symbols_with_data": result.items_succeeded,
-                "date_range": f"{combined['date'].min()} .. {combined['date'].max()}",
-                "throttle": limiter.stats(),
-            }
-        )
-
-    # ------------------------------------------------------------- downloads
 
     def _symbols(self, run_date: date) -> list[str]:
         """Tracked universe: current members plus retained historical names."""

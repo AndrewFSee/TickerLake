@@ -369,6 +369,37 @@ q.adjusted_ohlcv(symbols=["CCI"], start="2025-09-15", end="2025-09-15")
 
 `adjustment_drift()` reports which symbols have decayed, if you want to watch it.
 
+### Index additions arrive with no history
+
+A name joining at a reconstitution has only the bars collected since it joined.
+Bloom Energy and P entered the S&P 500 on 2026-09-21 with **five bars each**,
+reaching back to the day the universe first saw them. Nothing failed -- that is
+what makes it dangerous. The symbols were simply short, so anything needing a
+lookback had nothing to compute from, and the gap was visible only because
+somebody went looking.
+
+The daily OHLCV stage now checks stored coverage and gives such symbols the full
+range instead of the five-day lookback window. Three constraints keep it honest:
+
+- **Recency, not row count.** A symbol qualifies when its earliest stored bar is
+  newer than `recent_history_days` (30). Once the history lands the earliest bar
+  moves back years and it drops out by itself -- no state to track, nothing to
+  reset. A genuinely recent listing keeps qualifying for a month, costing one
+  small extra request a day, and fetches exactly the short history it has.
+- **Current members only.** The tracked universe also holds every symbol ever
+  removed, and delisted names have no history for the same reason they have no
+  future: the vendor will not serve it. AGL Resources (`GAS`) left the index in
+  2016 with zero bars stored, and without this filter it would be re-requested
+  every night forever.
+- **A ceiling** (`max_newcomers`, 25). A reconstitution moves a handful of
+  names. If nearly the whole universe looks new, the lake is empty rather than
+  the index rewritten -- a fresh install, or `data_root` pointed somewhere
+  unexpected -- and a nightly run is the wrong place to discover that. Above the
+  ceiling the pass is skipped with a warning pointing at `backfill ohlcv`.
+
+Symbols backfilled this way are listed in the run summary under
+`backfilled_newcomers`.
+
 ---
 
 ## Storage layout
