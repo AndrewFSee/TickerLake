@@ -371,6 +371,59 @@ announcements:
   # already-dated rows.
   resolve_all: false
 
+volatility:
+  # Volatility index levels (daily + 1-minute) and the VIX futures curve.
+  #
+  # Indices are stored in `ohlcv` and `intraday_bars` as ^VIX, ^VVIX, ... so
+  # they join to equities on the same date/timestamp and can never collide with
+  # a ticker. They are NOT registered in membership: that table feeds every
+  # fetcher, and an index has no earnings, filings or Tiingo/Finnhub quotes.
+  enabled: true
+  requests_per_second: 2.0
+
+  # CBOE's own daily history files (same-day fresh, back to 1990 for VIX).
+  indices:
+    VIX:   "S&P 500, 30-day implied volatility"
+    VIX1D: "S&P 500, 1-day"
+    VIX9D: "S&P 500, 9-day"
+    VIX3M: "S&P 500, 3-month"
+    VIX6M: "S&P 500, 6-month"
+    VIX1Y: "S&P 500, 1-year"
+    VVIX:  "Volatility of VIX"
+    SKEW:  "S&P 500 tail risk (priced out-of-the-money puts)"
+    VXN:   "Nasdaq-100"
+    VXD:   "Dow Jones Industrial Average"
+    OVX:   "Crude oil (USO options)"
+    GVZ:   "Gold (GLD options)"
+    VXEEM: "Emerging markets (EEM options)"
+    VXSLV: "Silver (SLV options)"
+    VXAPL: "Apple"
+  # Not CBOE's; Yahoo is the only free source.
+  yahoo_indices:
+    MOVE:  "ICE BofA MOVE - Treasury implied volatility"
+  # Published once a day: a 1-minute feed would be one bar. Daily only.
+  daily_only: [SKEW, MOVE]
+
+  # Daily: the full history on a symbol's first run, then only recent days.
+  daily_lookback_days: 10
+
+  # 1-minute bars. Yahoo keeps ~30 days, so the first run takes 29 and each run
+  # after keeps the series going. VIX trades CBOE's global hours, and with
+  # pre/post bars on its feed starts at 03:15 ET - overnight volatility nothing
+  # else in the lake records.
+  intraday_interval: "1m"
+  intraday_lookback_days: 7
+  intraday_backfill_days: 29
+  include_prepost: true
+
+  futures:
+    # Monthly VX contracts from CBOE, each with full daily history: settle,
+    # volume, open interest. Settled contracts are fetched once; live ones
+    # every run.
+    enabled: true
+    history_start: "2013-01-01"
+    months_ahead: 10
+
 tiingo:
   # Independent check on ADJUSTED prices, which is where vendors actually
   # diverge - raw closes are the easy case and already agree to the cent with
@@ -471,6 +524,7 @@ pipeline:
     - universe
     - ohlcv
     - intraday
+    - volatility
     - options
     - options_analytics
     - sec_edgar

@@ -462,6 +462,35 @@ QUALITY_SCHEMA = pa.schema(
     ]
 )
 
+VIX_FUTURES_SCHEMA = pa.schema(
+    [
+        pa.field("trade_date", pa.date32(), nullable=False),
+        # The contract's final settlement date: the Wednesday thirty days before
+        # the following month's SPX expiration. The curve is read by sorting on
+        # this, and `days_to_expiration` is what makes two dates comparable.
+        pa.field("expiration", pa.date32(), nullable=False),
+        pa.field("contract", pa.string()),
+        # Null on days the contract did not trade. CBOE reports 0 for open and
+        # close on those days and a quoted high/low that can invert (low above
+        # high), none of which is a price anyone paid.
+        pa.field("open", pa.float64()),
+        pa.field("high", pa.float64()),
+        pa.field("low", pa.float64()),
+        pa.field("close", pa.float64()),
+        # The daily settlement, set every business day whether or not the
+        # contract traded. This is the column the term structure is built from.
+        pa.field("settle", pa.float64(), nullable=False),
+        pa.field("change", pa.float64()),
+        pa.field("volume", pa.int64()),
+        pa.field("efp", pa.int64()),
+        pa.field("open_interest", pa.int64()),
+        pa.field("days_to_expiration", pa.int32()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+
 SCHEMAS: dict[str, pa.Schema] = {
     P.OHLCV: OHLCV_SCHEMA,
     P.OPTIONS_CHAINS: OPTIONS_SCHEMA,
@@ -482,6 +511,7 @@ SCHEMAS: dict[str, pa.Schema] = {
     P.INSIDER: INSIDER_SCHEMA,
     P.NEWS_EVENTS: NEWS_SCHEMA,
     P.QUALITY: QUALITY_SCHEMA,
+    P.VIX_FUTURES: VIX_FUTURES_SCHEMA,
 }
 
 
@@ -645,6 +675,13 @@ RULES: dict[str, ValidationRule] = {
         unique_on=("event_id",),
     ),
     P.QUALITY: ValidationRule(min_rows=0, non_null=("run_id", "stage", "metric")),
+    P.VIX_FUTURES: ValidationRule(
+        min_rows=0,
+        non_null=("trade_date", "expiration", "settle"),
+        unique_on=("expiration", "trade_date"),
+        positive=("settle",),
+        non_negative=("volume", "open_interest"),
+    ),
 }
 
 

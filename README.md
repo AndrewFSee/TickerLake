@@ -424,6 +424,67 @@ range instead of the five-day lookback window. Three constraints keep it honest:
 Symbols backfilled this way are listed in the run summary under
 `backfilled_newcomers`.
 
+### Volatility
+
+The `volatility` stage collects three things the lake had no source for. FRED's
+`VIXCLS` is a single daily close for one index; this is the whole family, by
+the minute, plus the futures curve.
+
+| | Source | Depth | Stored as |
+|---|---|---|---|
+| 16 volatility indices, daily | CBOE's own history files (MOVE: Yahoo) | VIX and SKEW from 1990; most from 2006-2011 | `ohlcv`, symbol `^VIX` etc. |
+| 14 of them, 1-minute | Yahoo | ~30 days, then accumulating | `intraday_bars` |
+| Monthly VIX futures | CBOE, one file per contract | May 2013 onward, 170 contracts | `vix_futures` |
+
+The indices: VIX at six maturities (1-day to 1-year), VVIX (the volatility of
+VIX), SKEW (priced tail risk), VXN, VXD, the commodity and asset-class indices
+OVX, GVZ, VXSLV and VXEEM, VXAPL, and ICE's MOVE for Treasuries. SKEW and MOVE
+are published once a day, so they have no minute feed.
+
+Stored under a leading caret, they join to equities on the same date or
+timestamp and cannot collide with a ticker. They are deliberately not in the
+membership table, which drives every fetcher -- the ETFs registered there were
+being asked for earnings and 8-Ks, and an index has no quote on Tiingo or
+Finnhub and files nothing.
+
+**VIX trades CBOE's global hours, so its minute feed starts at 03:15 ET**, 762
+bars a session against 405 for the regular-hours indices. That is overnight
+volatility nothing else in the lake records.
+
+```python
+q.sql("""SELECT strftime(timezone('America/New_York', datetime), '%H:%M') AS et, symbol, close
+         FROM intraday_bars WHERE date = '2026-09-25' AND symbol IN ('SPY', '^VIX') ...""")
+#  03:15  ^VIX   15.60     <- before the equity market opens
+#  09:31  SPY   768.62   ^VIX 15.25
+#  15:59  SPY   771.30   ^VIX 14.84
+
+q.sql("SELECT expiration, days_to_expiration, settle FROM vix_futures "
+      "WHERE trade_date = '2026-09-24' ORDER BY expiration")
+#  2026-10-21   27  17.8081
+#  2026-11-18   55  18.5509     <- contango: the curve slopes up
+#  2026-12-16   83  18.9487
+#  2027-01-20  118  19.6430
+```
+
+Checked against independent sources before it went in:
+
+| Check | Result |
+|---|---|
+| CBOE `^VIX` daily vs FRED `VIXCLS` | **4,238 of 4,238** overlapping days identical |
+| Last 1-minute bar vs CBOE's official close | exact for 13 of 14 indices; VIX within 0.2% |
+| Futures curve vs CBOE's settlement file | every monthly settle identical |
+| VX expirations computed vs contract files | all 170 resolved, including March 2025's Tuesday expiry (Good Friday) |
+
+Two things about the source data are worth knowing. CBOE's numbers are kept
+exactly as published, including a few prints that look wrong: VXD closes at 2.71
+on 2021-07-13 between days of 14.86 and 15.51, VXEEM has several one-day spikes,
+and VVIX's first weeks in March 2006 read as low as 15.71 because VIX options had
+only started trading that February. VIX1D's spikes, by contrast, are real -- it
+is the one-day index, built to jump before scheduled events such as the 2024
+election and the 18 December 2024 FOMC. On futures, days a contract did not
+trade keep their settlement but carry no open, high, low or close: CBOE reports
+zeros and an inverted range on those days, which are not prices anyone paid.
+
 ---
 
 ## Storage layout
@@ -441,6 +502,7 @@ data/
 ├── membership/sp500_membership.parquet + .csv   # CSV mirror is worth committing
 ├── universe_history/universe_history.parquet    # every observed daily universe
 ├── quality/                                     # cross-source validation results
+├── vix_futures/vx_monthly.parquet              # every monthly VX contract, daily
 ├── _checkpoints/  _logs/  _runs/
 ```
 

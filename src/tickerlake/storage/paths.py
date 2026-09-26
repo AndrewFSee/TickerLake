@@ -55,6 +55,7 @@ EARNINGS = "earnings"
 MEMBERSHIP = "membership"
 UNIVERSE_HISTORY = "universe_history"
 QUALITY = "quality"
+VIX_FUTURES = "vix_futures"
 
 DATASETS = [
     OHLCV,
@@ -76,6 +77,7 @@ DATASETS = [
     MEMBERSHIP,
     UNIVERSE_HISTORY,
     QUALITY,
+    VIX_FUTURES,
 ]
 
 # Internal (non-dataset) directories.
@@ -224,6 +226,16 @@ class DatasetPaths:
         return d / f"series_{safe_symbol(series_id)}.parquet"
 
     # ------------------------------------------------------ macro extensions
+
+    def vix_futures_file(self) -> Path:
+        """Every monthly VX contract's daily history, in one file.
+
+        Small by design -- a dozen years of monthly contracts is ~25k rows -- so
+        partitioning would only add files.
+        """
+        d = self.root / VIX_FUTURES
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "vx_monthly.parquet"
 
     def factors_file(self, factor_set: str) -> Path:
         d = self.root / FACTORS

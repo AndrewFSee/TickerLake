@@ -166,6 +166,7 @@ class ParquetWriter:
             P.INSIDER: ["symbol", "transaction_date"],
             P.NEWS_EVENTS: ["date", "symbol"],
             P.QUALITY: ["stage", "metric"],
+            P.VIX_FUTURES: ["expiration", "trade_date"],
         }.get(dataset, [])
 
     def _to_table(self, df: pd.DataFrame, dataset: str) -> pa.Table:

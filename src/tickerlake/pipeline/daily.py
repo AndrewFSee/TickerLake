@@ -39,6 +39,7 @@ from tickerlake.fetchers.reference import (
 )
 from tickerlake.fetchers.sec_edgar import SECEdgarFetcher
 from tickerlake.fetchers.tiingo import TiingoFetcher
+from tickerlake.fetchers.volatility import VolatilityFetcher
 from tickerlake.fetchers.yf_intraday import YFinanceIntradayFetcher
 from tickerlake.fetchers.yf_ohlcv import YFinanceOHLCVFetcher
 from tickerlake.fetchers.yf_options import YFinanceOptionsFetcher
@@ -67,6 +68,7 @@ FETCHERS = {
     "cot": CftcCotFetcher,
     "tiingo": TiingoFetcher,
     "marketaux": MarketauxFetcher,
+    "volatility": VolatilityFetcher,
 }
 
 
