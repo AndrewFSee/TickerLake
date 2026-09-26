@@ -130,6 +130,10 @@ class EarningsFetcher(BaseFetcher):
 
         now = datetime.now(UTC)
         rows = []
+        # What Finnhub says *now*, per symbol: fiscal quarter -> period label.
+        # Only symbols that actually answered are reconciled; a failed request
+        # says nothing about which quarters exist.
+        returned: dict[str, dict[tuple[int, int], date]] = {}
         for symbol in symbols:
             try:
                 payload = client.get_json(
@@ -146,6 +150,9 @@ class EarningsFetcher(BaseFetcher):
                 period = _to_date(entry.get("period"))
                 if period is None:
                     continue
+                fy, fq = _int(entry.get("year")), _int(entry.get("quarter"))
+                if fy is not None and fq is not None:
+                    returned.setdefault(symbol, {})[(fy, fq)] = period
                 rows.append(
                     {
                         "symbol": symbol,
@@ -163,12 +170,85 @@ class EarningsFetcher(BaseFetcher):
                 )
 
         if rows:
-            write = self.writer.write(
-                pd.DataFrame(rows), P.EARNINGS, self.paths.earnings_file("surprises"), mode="merge"
-            )
+            path = self.paths.earnings_file("surprises")
+            write = self.writer.write(pd.DataFrame(rows), P.EARNINGS, path, mode="merge")
             result.record_write(write)
             result.details["surprise_rows"] = len(rows)
             self.log.info("earnings surprises: %d rows across %d symbols", len(rows), len(symbols))
+            self._reconcile(path, returned, result)
+
+    def _reconcile(
+        self,
+        path: Any,
+        returned: dict[str, dict[tuple[int, int], date]],
+        result: FetchResult,
+    ) -> None:
+        """Drop stored quarters that Finnhub has since relabelled or withdrawn.
+
+        The natural key is (symbol, record_type, period), but ``period`` is not
+        a stable identity -- Finnhub revises it. Paychex's fiscal Q1 2027 was
+        first reported under ``2027-03-31`` and re-issued days later as
+        ``2026-09-30``. The corrected row lands under a new key, so without this
+        the stale one survives beside it and the quarter exists twice. The fiscal
+        quarter is the stable identity, so two rows for it means one is stale.
+
+        Finnhub also withdraws quarters outright. The lake held Amcor's fiscal Q4
+        2026 (EPS 1.23, labelled ``2026-12-31``); Finnhub's current answer tops
+        out at Q3. The endpoint returns the *latest* quarters, so a stored
+        quarter later than everything it now returns cannot have aged out of the
+        window -- it was retracted, and keeping it keeps a surprise that does not
+        exist.
+
+        Announcement dates are deliberately not carried across a relabel. A date
+        matched against the wrong label is suspect, and the announcements stage
+        runs later in the same pipeline and re-resolves the corrected row.
+        """
+        import pyarrow.parquet as pq
+
+        if not returned or not path.exists():
+            return
+        stored = pq.read_table(path).to_pandas()
+        if stored.empty:
+            return
+
+        drop = pd.Series(False, index=stored.index)
+        relabelled = retracted = 0
+        for symbol, quarters in returned.items():
+            mine = (stored["symbol"] == symbol) & stored["fiscal_year"].notna()
+            if not mine.any():
+                continue
+            periods = pd.to_datetime(stored["period"]).dt.date
+            newest = max(quarters)
+            for idx in stored.index[mine]:
+                key = (int(stored.at[idx, "fiscal_year"]), int(stored.at[idx, "fiscal_quarter"]))
+                if key in quarters:
+                    if periods[idx] != quarters[key]:
+                        drop[idx] = True
+                        relabelled += 1
+                # Only trust a withdrawal when Finnhub returned a real window;
+                # a one-row answer is too thin to conclude anything is missing.
+                elif key > newest and len(quarters) >= 2:
+                    drop[idx] = True
+                    retracted += 1
+
+        if not drop.any():
+            return
+
+        gone = stored.loc[drop, ["symbol", "fiscal_year", "fiscal_quarter", "period"]]
+        self.log.info(
+            "reconciled surprises: dropped %d relabelled and %d withdrawn quarter(s): %s",
+            relabelled,
+            retracted,
+            ", ".join(
+                f"{r.symbol} FY{int(r.fiscal_year)}Q{int(r.fiscal_quarter)}@{r.period}"
+                for r in gone.head(10).itertuples()
+            ),
+        )
+        self.writer.write(
+            stored.loc[~drop].reset_index(drop=True), P.EARNINGS, path, mode="overwrite"
+        )
+        result.details["surprises_relabelled"] = relabelled
+        result.details["surprises_withdrawn"] = retracted
 
     # ------------------------------------------------------- recommendations
 
@@ -233,7 +313,7 @@ class EarningsFetcher(BaseFetcher):
     def _slice(self, run_date: date, per_run: int) -> list[str]:
         if self.symbols_override is not None:
             return self.symbols_override
-        members = self.tracker.current_members() if self.tracker else []
+        members = self.company_members()
         if not members or per_run <= 0:
             return []
         offset = (run_date.toordinal() * per_run) % len(members)

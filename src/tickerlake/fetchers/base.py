@@ -165,6 +165,23 @@ class BaseFetcher(ABC):
         """Read a key from this fetcher's own config section."""
         return self.config.get(f"{self.name}.{key}", default)
 
+    def company_members(self) -> list[str]:
+        """Current index constituents only -- companies, never funds or indices.
+
+        ``tracker.current_members()`` answers "what do we collect today", which
+        spans every collected index: the S&P 500, the 60 tracked ETFs, and
+        anything added later. That is right for prices and wrong for anything
+        that assumes an issuing company. Earnings, insider trades and 8-K
+        announcements do not exist for a fund, so asking cost 60 wasted requests
+        per rotation -- and for VXX, a VIX-futures ETN, Finnhub answered anyway
+        with four quarters of earnings that belong to nothing.
+        """
+        if self.symbols_override is not None:
+            return self.symbols_override
+        if self.tracker is None:
+            return []
+        return self.tracker.current_members(self.tracker.index_name)
+
     # --------------------------------------------------------------- runner
 
     def run(self, run_date: date) -> FetchResult:

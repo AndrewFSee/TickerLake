@@ -21,26 +21,46 @@ carry 2.02, on exactly the quarterly cadence.
 Matching
 --------
 An 8-K does not state which fiscal period it reports, so the pairing has to be
-inferred -- and two properties of the real data make the obvious rule wrong.
+inferred, and every shortcut here has been wrong for somebody.
 
-**Period labels are calendar quarters, not fiscal ones.** Finnhub files General
-Mills' quarter ending 2025-11-30 under ``period = 2025-12-31``; it was announced
-on 2025-12-17, *before* its own label. Requiring the filing to fall strictly
-after the period end therefore skipped the real announcement and took the next
-quarter's, dating every General Mills and Costco period one quarter late. So the
-window opens ``max_lead_days`` *before* the label.
+**Finnhub's ``period`` is not the fiscal close, and follows no single rule
+relative to it.** Coca-Cola's quarter ending 2026-04-03 is labelled
+2026-03-31, three days *before* the close; Applied Materials' ending
+2026-07-26 is labelled 2026-09-30, sixty-six days *after*. A window around the
+label is therefore ambiguous by one quarter in one direction or the other --
+widen it enough for Applied Materials and Apple takes the previous quarter's
+announcement, which is lookahead. Inferring the close from the label corrupted
+eighteen symbols on one attempt.
 
-**Not every Item 2.02 filing is an earnings release.** Goldman Sachs filed one
-on 2026-01-08, a week before its actual Q4 release on 2026-01-15. Taking the
-earliest filing in the window picks the decoy.
+So the close comes from SEC instead. Every 10-Q and 10-K carries a
+``reportDate`` -- the period of report, exactly the fiscal close -- and its
+quarter number follows from position: a 10-K closes Q4, and each 10-Q is Q1-Q3
+by its distance from the preceding year end. A Finnhub row is tied to the close
+of the *same fiscal quarter* near its label. Two closes of one quarter are a
+year apart, so at most one qualifies, and the window is kept tight enough that
+a numbering disagreement leaves the row undated rather than borrowing a
+neighbour. The newest quarter is usually announced before its 10-Q exists, so
+its close is projected from the same quarter a year earlier.
 
-What separates them is cadence: a company announces at a near-constant offset
-from its period label, so the offset is measured from the company's own filing
-history and each period then takes the filing closest to its expected date. A
-filing is claimed by at most one period -- without that, a single 8-K was
-recorded as both Q3 and Q4 -- and one too far off the company's own cadence is
-left unmatched, because a wrong date reintroduces the bias this exists to
-remove.
+**Not every Item 2.02 filing is an earnings release.** Tesla files a delivery
+report two days into every quarter; Occidental, APA, Prudential and Super
+Micro pre-announce a week or two after each close; Goldman filed preliminary
+numbers a week before its Q4 release. These streams are as regular as the real
+thing, which is how a cadence estimate seeded on the earliest filing locked onto
+them and dated those surprises two to six weeks early.
+
+With the true close known, two facts pick the release. Nobody announces within
+a week of closing the books. And a company releases earnings before, or with,
+its 10-Q or 10-K -- true in 1,684 of 1,686 quarters checked -- while
+pre-announcements come earlier still. The release is the *last* Item 2.02 at
+least a week after the close and no later than the periodic report.
+
+That rule errs late rather than early: Robinhood furnishes monthly metrics
+under Item 2.02, so its date can land a few days after the real release. Late
+costs timeliness; early hands a model a surprise before it existed.
+
+Where no close can be established the older label-based matcher still runs,
+with its cadence estimate. It covers two symbols.
 
 Reach
 -----
@@ -103,10 +123,21 @@ class AnnouncementFetcher(BaseFetcher):
         # this area has come down to: they satisfy each other's isinstance
         # checks but refuse to compare.
         pending: dict[str, list[date]] = {}
+        # Finnhub's fiscal quarter per row: the stable half of the quarter's
+        # identity, and what ties a row to its real close below.
+        quarter_of: dict[tuple[str, date], int | None] = {}
         for row in unmatched.itertuples():
             period = as_date(row.period_key)
             if period is not None:
                 pending.setdefault(str(row.symbol), []).append(period)
+                fq = getattr(row, "fiscal_quarter", None)
+                quarter_of[(str(row.symbol), period)] = None if pd.isna(fq) else int(fq)
+
+        # Only companies. A fund has no 8-K to find, and asking the SEC about one
+        # just spends a request to learn that.
+        if self.tracker is not None and self.symbols_override is None:
+            companies = self.tracker.constituent_symbols()
+            pending = {s: p for s, p in pending.items() if s in companies}
 
         limit = int(self.cfg("symbols_per_run", 60))
         symbols = sorted(pending)[:limit]
@@ -123,6 +154,7 @@ class AnnouncementFetcher(BaseFetcher):
             timeout=90,
         )
         resolved: list[dict[str, Any]] = []
+        anchored = 0
         try:
             cik_map = self._cik_map(client, symbols, result)
 
@@ -132,14 +164,21 @@ class AnnouncementFetcher(BaseFetcher):
                     result.items_skipped += 1
                     continue
                 try:
-                    announcements = self._item_202_filings(client, cik)
+                    recent = self._recent_filings(client, cik)
                     result.items_succeeded += 1
                 except Exception as exc:
                     result.items_failed += 1
                     self.log.debug("submissions %s: %s", symbol, exc)
                     continue
+                announcements = self._parse_202(recent)
+                anchors = self._anchors(
+                    [(p, quarter_of.get((symbol, p))) for p in pending[symbol]],
+                    self._quarter_closes(recent),
+                    self._report_filed(recent),
+                )
+                anchored += anchors is not None
                 if announcements:
-                    resolved.extend(self._match(symbol, pending[symbol], announcements))
+                    resolved.extend(self._match(symbol, pending[symbol], announcements, anchors))
         finally:
             client.close()
 
@@ -166,6 +205,8 @@ class AnnouncementFetcher(BaseFetcher):
 
         df["announcement_date"] = df["announcement_date_new"]
         df["announcement_accession"] = df["announcement_accession_new"]
+        if "fiscal_period_end_new" in df.columns:
+            df["fiscal_period_end"] = df["fiscal_period_end_new"]
         df = df.drop(columns=[c for c in df.columns if c.endswith("_new") or c == "period_key"])
         df["ingested_at"] = datetime.now(UTC)
 
@@ -175,6 +216,8 @@ class AnnouncementFetcher(BaseFetcher):
         result.record_write(write)
 
         lags = (pd.to_datetime(df["announcement_date"]) - pd.to_datetime(df["period"])).dt.days
+        result.details["symbols_anchored_on_fiscal_close"] = anchored
+        result.details["symbols_on_label_fallback"] = len(symbols) - anchored
         result.details.update(
             {
                 "periods_dated": len(df),
@@ -242,14 +285,20 @@ class AnnouncementFetcher(BaseFetcher):
                 out[symbol] = str(entry.get("cik_str", "")).zfill(10)
         return out
 
-    def _item_202_filings(self, client: HttpClient, cik: str) -> list[tuple[date, str]]:
-        """(filing_date, accession) for every 8-K carrying Item 2.02."""
+    def _recent_filings(self, client: HttpClient, cik: str) -> dict[str, Any]:
+        """The ``filings.recent`` block of a company's submissions record."""
         try:
             payload = client.get_json(SUBMISSIONS_URL.format(cik=cik))
         except HttpError:
-            return []
+            return {}
+        return (payload.get("filings") or {}).get("recent") or {}
 
-        recent = (payload.get("filings") or {}).get("recent") or {}
+    def _item_202_filings(self, client: HttpClient, cik: str) -> list[tuple[date, str]]:
+        """(filing_date, accession) for every 8-K carrying Item 2.02."""
+        return self._parse_202(self._recent_filings(client, cik))
+
+    @staticmethod
+    def _parse_202(recent: dict[str, Any]) -> list[tuple[date, str]]:
         forms = recent.get("form") or []
         items = recent.get("items") or []
         dates = recent.get("filingDate") or []
@@ -270,20 +319,151 @@ class AnnouncementFetcher(BaseFetcher):
             out.append((day, accessions[i] if i < len(accessions) else ""))
         return sorted(out)
 
+    @staticmethod
+    def _quarter_closes(recent: dict[str, Any]) -> list[tuple[date, int]]:
+        """(close, fiscal quarter) for every 10-Q and 10-K on record.
+
+        ``reportDate`` is SEC's period of report: exactly the fiscal period end,
+        one per filing. It is the authoritative close. An earlier attempt read
+        the latest date in a filing's XBRL facts instead, and got cover-page
+        dates -- "shares outstanding as of 16 January" -- which put Apple's
+        December quarter in the middle of January.
+
+        The quarter number comes from position, which needs no naming
+        convention: a 10-K closes Q4, and each 10-Q is Q1, Q2 or Q3 by how far
+        it falls after the preceding year end. Costco's 12/12/12/16-week
+        quarters land on 84, 168 and 252 days, which still round cleanly.
+        """
+        forms = recent.get("form") or []
+        reports = recent.get("reportDate") or []
+        years: set[date] = set()
+        quarters: set[date] = set()
+        for i, form in enumerate(forms):
+            kind = str(form).split("/")[0]  # 10-K/A reports the same period
+            if kind not in ("10-K", "10-Q"):
+                continue
+            day = as_date(reports[i] if i < len(reports) else None)
+            if day is not None:
+                (years if kind == "10-K" else quarters).add(day)
+
+        ends = sorted(years)
+        out = [(d, 4) for d in ends]
+        for day in sorted(quarters - years):
+            prior = [e for e in ends if e < day]
+            if prior:
+                q = round((day - prior[-1]).days / 91.3)
+            else:
+                later = [e for e in ends if e > day]
+                if not later:
+                    continue
+                q = 4 - round((later[0] - day).days / 91.3)
+            # Anything else means a missing or transition filing; better to
+            # leave that quarter out than to number it wrongly.
+            if 1 <= q <= 3:
+                out.append((day, q))
+        return sorted(out)
+
+    @staticmethod
+    def _report_filed(recent: dict[str, Any]) -> dict[date, date]:
+        """When each 10-Q / 10-K was first filed, keyed by the period it closes.
+
+        The earliest filing per period, so a later amendment does not stand in
+        for the original.
+        """
+        forms = recent.get("form") or []
+        reports = recent.get("reportDate") or []
+        filed = recent.get("filingDate") or []
+        out: dict[date, date] = {}
+        for i, form in enumerate(forms):
+            if str(form).split("/")[0] not in ("10-K", "10-Q"):
+                continue
+            close = as_date(reports[i] if i < len(reports) else None)
+            day = as_date(filed[i] if i < len(filed) else None)
+            if close is not None and day is not None:
+                out[close] = min(day, out.get(close, day))
+        return out
+
+    def _anchors(
+        self,
+        rows: list[tuple[date, int | None]],
+        closes: list[tuple[date, int]],
+        filed: dict[date, date] | None = None,
+    ) -> dict[date, tuple[date, bool, date | None]] | None:
+        """Each period's real fiscal close, or None to fall back on the label.
+
+        Finnhub's label follows no single rule relative to the close. Coca-Cola's
+        quarter ending 2026-04-03 is labelled 2026-03-31, three days *before*;
+        Applied Materials' ending 2026-07-26 is labelled 2026-09-30, 66 days
+        after. So a window around the label is ambiguous by one quarter in one
+        direction or the other, and anchoring on "the close nearest the label"
+        corrupted eighteen symbols with the previous quarter's announcement.
+
+        The fiscal quarter number removes that. A close must match the row's
+        quarter *and* sit near its label, and two closes of the same quarter
+        are a year apart, so at most one qualifies. The window is kept tight on
+        purpose: if Finnhub and SEC ever disagree on quarter numbering, the
+        wrong-quarter close is ~91 days away and falls outside it, leaving the
+        period undated rather than dated a quarter early.
+
+        The newest quarter is normally announced before its 10-Q exists. Its
+        close is projected from the same quarter a year earlier -- which copes
+        with uneven quarters like Costco's -- and is marked inexact.
+
+        Returns None unless every period anchors, because the matcher's cadence
+        estimate needs one consistent basis.
+        """
+        before = int(self.cfg("close_max_days_before_label", 75))
+        after = int(self.cfg("close_max_days_after_label", 10))
+        filed = filed or {}
+        out: dict[date, tuple[date, bool, date | None]] = {}
+        for label, fq in rows:
+            if fq is None:
+                return None
+            lo, hi = label - timedelta(days=before), label + timedelta(days=after)
+            same = [d for d, q in closes if q == fq]
+            inside = [d for d in same if lo <= d <= hi]
+            if inside:
+                close = max(inside)
+                out[label] = (close, True, filed.get(close))
+                continue
+            earlier = [d for d in same if d < lo]
+            found = None
+            for years in (1, 2):
+                if not earlier:
+                    break
+                guess = earlier[-1] + timedelta(days=364 * years)
+                if lo <= guess <= hi:
+                    found = guess
+                    break
+            if found is None:
+                return None
+            out[label] = (found, False, None)
+        return out
+
     # -------------------------------------------------------------- matching
 
     def _match(
-        self, symbol: str, periods: list[date], announcements: list[tuple[date, str]]
+        self,
+        symbol: str,
+        periods: list[date],
+        announcements: list[tuple[date, str]],
+        anchors: dict[date, tuple[date, bool, date | None]] | None = None,
     ) -> list[dict[str, Any]]:
         """Pair each period with the Item 2.02 filing that announced it.
 
-        See the module docstring for why this is not simply "the first filing
-        after the period ends".
+        With ``anchors`` -- each period's true fiscal close -- this defers to
+        :meth:`_match_anchored`. What follows is the fallback for a company whose
+        closes cannot be established: it works from Finnhub's label, which is
+        ambiguous by a quarter, and so leans on the cadence estimate below.
         """
-        max_lag = int(self.cfg("max_lag_days", 120))
-        max_lead = int(self.cfg("max_lead_days", 45))
+        if anchors:
+            return self._match_anchored(symbol, periods, announcements, anchors)
+
         tolerance = int(self.cfg("lag_tolerance_days", 45))
         default_lag = float(self.cfg("typical_lag_days", 30))
+
+        lead = int(self.cfg("max_lead_days", 45))
+        lag = int(self.cfg("max_lag_days", 120))
 
         ordered = sorted(set(periods))
         # Collapse same-day filings: an 8-K and its amendment are one event.
@@ -295,9 +475,12 @@ class AnnouncementFetcher(BaseFetcher):
         days = sorted(by_day)
 
         def window(period: date) -> list[date]:
-            lo = period - timedelta(days=max_lead)
-            hi = period + timedelta(days=max_lag)
+            lo = period - timedelta(days=lead)
+            hi = period + timedelta(days=lag)
             return [d for d in days if lo <= d <= hi]
+
+        def offset(pick: date, period: date) -> int:
+            return (pick - period).days
 
         def assign(typical: float | None) -> dict[date, date]:
             """One-to-one period -> filing pairing at a given expected offset.
@@ -319,8 +502,8 @@ class AnnouncementFetcher(BaseFetcher):
                     # Ties break to the earlier filing: results are public from
                     # their first disclosure, and a later duplicate 8-K does not
                     # undo that.
-                    _, pick = min((abs((d - period).days - typical), d) for d in candidates)
-                    if abs((pick - period).days - typical) > tolerance:
+                    _, pick = min((abs(offset(d, period) - typical), d) for d in candidates)
+                    if abs(offset(pick, period) - typical) > tolerance:
                         # Further off the company's own cadence than a late
                         # report plausibly explains, so more likely an unrelated
                         # 2.02. Leave the period undated rather than date it
@@ -330,20 +513,17 @@ class AnnouncementFetcher(BaseFetcher):
                 out[period] = pick
             return out
 
-        # The offset between a period label and its announcement is a property
-        # of the company's fiscal calendar, so read it off the company's own
-        # filings rather than assuming a December year-end. It is negative for
-        # anyone whose fiscal quarters close before the calendar ones.
-        #
-        # Iterate, because the first estimate is taken from a pairing that may
-        # itself have claimed a decoy, and fixing the pairing fixes the
-        # estimate. Honeywell needed this: an unrelated Item 2.02 in December
-        # dragged the median down to 11 days, which then let a June decoy tie
-        # with the real July release and win on the earlier-filing tie-break.
-        # One more pass put the median back at 23 and the tie disappeared.
+        # The offset between a period and its announcement is a property of the
+        # company, so read it off the company's own filings. Iterate, because
+        # the first estimate comes from a pairing that may itself have claimed a
+        # decoy, and fixing the pairing fixes the estimate. Honeywell needed
+        # this: an unrelated Item 2.02 dragged the median to 11 days, which then
+        # let a June decoy tie with the real July release. Goldman still needs
+        # it even when anchored -- its decoy on 2026-01-08 falls inside the
+        # window, a week ahead of the real release on the 15th.
         assignment = assign(None)
         for _ in range(int(self.cfg("cadence_passes", 5))):
-            lags = [(pick - period).days for period, pick in assignment.items()]
+            lags = [offset(pick, period) for period, pick in assignment.items()]
             typical = statistics.median(lags) if lags else default_lag
             nxt = assign(typical)
             if nxt == assignment:
@@ -358,6 +538,75 @@ class AnnouncementFetcher(BaseFetcher):
                     "period_key": pd.Timestamp(period),
                     "announcement_date": pick,
                     "announcement_accession": by_day[pick],
+                    # Only an exact close is recorded; a projected one is at
+                    # most a week out, but it is not the company's statement.
+                    "fiscal_period_end": None,
+                }
+            )
+        return out
+
+    def _match_anchored(
+        self,
+        symbol: str,
+        periods: list[date],
+        announcements: list[tuple[date, str]],
+        anchors: dict[date, tuple[date, bool, date | None]],
+    ) -> list[dict[str, Any]]:
+        """The latest Item 2.02 between the close and the periodic report.
+
+        With the true close known, the only question left is which of several
+        Item 2.02 filings in a quarter is the earnings release, and two facts
+        answer it. Nobody announces within days of closing the books, so a
+        filing under a week after the close is not the release -- Tesla files
+        its delivery report two days into every quarter. And a company releases
+        earnings before, or with, its 10-Q or 10-K: that held in 1,684 of 1,686
+        quarters checked. Pre-announcements come earlier still, so the release
+        is the *last* 2.02 on or before the periodic report.
+
+        Seeding on the earliest filing instead -- what the cadence estimate did
+        -- is exactly wrong for a company that pre-announces every quarter:
+        Occidental files an Item 2.02 about ten days after each close and its
+        earnings about five weeks after, and the regular early stream won,
+        dating every Occidental surprise four weeks early. APA, Prudential,
+        Super Micro and The Trade Desk had the same shape.
+
+        The rule can err the other way -- Robinhood furnishes monthly metrics
+        under Item 2.02, so it may pick one of those a few days after the real
+        release. Late is the safe direction here: it costs a few days of
+        timeliness, where early hands a model the surprise before it existed.
+        """
+        floor = timedelta(days=int(self.cfg("min_days_after_quarter_end", 7)))
+        cap = timedelta(days=int(self.cfg("max_days_after_quarter_end", 75)))
+        # EDGAR stamps an after-hours filing with the next business day, so a
+        # release can carry a date one day after the report it preceded.
+        slack = timedelta(days=int(self.cfg("report_slack_days", 2)))
+
+        by_day: dict[date, str] = {}
+        for day, accession in sorted(announcements):
+            by_day.setdefault(day, accession)
+        days = sorted(by_day)
+
+        claimed: set[date] = set()
+        out: list[dict[str, Any]] = []
+        for period in sorted(set(periods)):
+            close, exact, filed = anchors[period]
+            hi = close + cap
+            if filed is not None:
+                hi = min(hi, filed + slack)
+            candidates = [d for d in days if close + floor <= d <= hi and d not in claimed]
+            if not candidates:
+                continue
+            pick = candidates[-1]
+            claimed.add(pick)
+            out.append(
+                {
+                    "symbol": symbol,
+                    "period_key": pd.Timestamp(period),
+                    "announcement_date": pick,
+                    "announcement_accession": by_day[pick],
+                    # Only an exact close is recorded; a projected one is at
+                    # most a week out, but it is not the company's statement.
+                    "fiscal_period_end": close if exact else None,
                 }
             )
         return out

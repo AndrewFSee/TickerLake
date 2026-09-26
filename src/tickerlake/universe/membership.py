@@ -572,6 +572,18 @@ class MembershipTracker:
         mask = df["index_name"].isin(indices) & df["end_date"].isna()
         return sorted(df.loc[mask, "symbol"].unique())
 
+    def constituent_symbols(self) -> set[str]:
+        """Every symbol that has *ever* been an index constituent.
+
+        Unlike :meth:`current_members` this keeps removed and delisted names,
+        which are still companies with real filings. It excludes everything
+        tracked only under another ``index_name`` -- ETFs, volatility indices.
+        """
+        df = self.load()
+        if df.empty:
+            return set()
+        return set(df.loc[df["index_name"] == self.index_name, "symbol"].unique())
+
     def members_on(self, as_of: date, index_name: str | None = None) -> list[str]:
         """Point-in-time index constituents.
 

@@ -340,18 +340,32 @@ announcements:
   enabled: true
   requests_per_second: 5.0
   symbols_per_run: 60
-  # `period` is a CALENDAR quarter end, so a company whose fiscal quarter closes
-  # earlier announces BEFORE its own label - General Mills' 2025-12-31 period was
-  # announced 2025-12-17. The window has to open before the label to catch it.
+
+  # --- Primary path: anchored on the company's own fiscal close --------------
+  # Finnhub's `period` is not the close and follows no fixed rule relative to it
+  # (Coca-Cola's Apr 3 close is labelled Mar 31; Applied Materials' Jul 26 close
+  # is labelled Sep 30). The real close is SEC's reportDate on each 10-Q/10-K,
+  # tied to a Finnhub row by fiscal quarter number. These bound where that close
+  # may sit relative to the label; the fiscal-quarter match does the real work,
+  # and a tight window means a numbering mismatch fails safe (undated).
+  close_max_days_before_label: 75
+  close_max_days_after_label: 10
+  # The release is the LAST Item 2.02 in this window after the close. Nobody
+  # announces within a week of closing the books - Tesla's delivery report two
+  # days in is not its earnings.
+  min_days_after_quarter_end: 7
+  max_days_after_quarter_end: 75
+  # ...and no later than the 10-Q/10-K, which follows the release in 1,684 of
+  # 1,686 quarters checked. EDGAR stamps after-hours filings with the next
+  # business day, hence a little slack.
+  report_slack_days: 2
+
+  # --- Fallback: label-based, for the rare symbol with no establishable close -
   max_lead_days: 45
-  # An announcement more than this long after period end is not that period's.
   max_lag_days: 120
-  # A filing further than this from the company's own typical offset is more
-  # likely an unrelated Item 2.02 (Goldman filed one a week before its real Q4
-  # release). Leave such a period undated rather than date it wrongly.
   lag_tolerance_days: 45
-  # Fallback offset when a symbol has too little history to measure its own.
   typical_lag_days: 30
+
   # Re-examine surprises that already have a date. Off in steady state; turn on
   # for one run after changing the matching rule, since nothing else revisits
   # already-dated rows.

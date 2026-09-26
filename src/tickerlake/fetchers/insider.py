@@ -134,7 +134,7 @@ class InsiderFetcher(BaseFetcher):
     def _slice(self, run_date: date, per_run: int) -> list[str]:
         if self.symbols_override is not None:
             return self.symbols_override
-        members = self.tracker.current_members() if self.tracker else []
+        members = self.company_members()
         if not members or per_run <= 0:
             return []
         offset = (run_date.toordinal() * per_run) % len(members)

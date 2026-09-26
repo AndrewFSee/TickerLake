@@ -221,6 +221,11 @@ EARNINGS_SCHEMA = pa.schema(
         # weeks before it existed. This is the field to filter on.
         pa.field("announcement_date", pa.date32(), nullable=True),
         pa.field("announcement_accession", pa.string()),
+        # The company's real fiscal quarter end, from its own XBRL filings.
+        # `period` is Finnhub's calendar-quarter label for the quarter, which for
+        # an off-calendar company can sit two months after the true close:
+        # Applied Materials' quarter ending 2026-07-26 is labelled 2026-09-30.
+        pa.field("fiscal_period_end", pa.date32(), nullable=True),
         pa.field("strong_buy", pa.int32()),
         pa.field("buy", pa.int32()),
         pa.field("hold", pa.int32()),

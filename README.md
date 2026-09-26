@@ -236,54 +236,78 @@ Two further traps worth knowing:
 
 ### Earnings announcement dates
 
-Surprise rows carry `period`, the fiscal period end, which says nothing about
-when the number became public. That is the same lookahead bias, in a dataset
-where it is easier to miss because the gap is weeks rather than months. Finnhub
-cannot close it: on the free tier its calendar returns nothing for past ranges.
+Surprise rows carry `period`, which says nothing about when the number became
+public. That is the same lookahead bias, in a dataset where it is easier to miss
+because the gap is weeks rather than months. Finnhub cannot close it: on the
+free tier its calendar returns nothing for past ranges.
 
-SEC 8-K **Item 2.02 (Results of Operations and Financial Condition)** can. The
-submissions API exposes item codes per filing, so earnings releases are directly
-identifiable, and `announcements` matches them onto stored periods. **690 of 695
-surprises across all 175 symbols are now dated**, median 29 days after period
-end.
+SEC 8-K **Item 2.02 (Results of Operations and Financial Condition)** can, and
+`announcements` matches those filings onto stored quarters. **1,697 of 1,709
+surprises across 428 symbols are dated, 1,693 of them against an exact fiscal
+close from SEC.**
 
-Getting the match right took two corrections that are worth recording, because
-both produced plausible-looking wrong answers rather than errors:
+**Getting the match right took four attempts, and every wrong one passed its own
+validation.** The version this replaced reported zero rows deviating from their
+symbol's median lag and zero shared filings -- and still dated Applied Materials
+and Cisco a quarter late, and thirteen symbols two to six weeks *early*. A
+consistency check cannot see a consistent error. What finally exposed them was
+comparing individual dates against the filings themselves.
 
-- **`period` is a *calendar* quarter end, not a fiscal one.** General Mills
-  closes its quarters in August, November, February and May; Finnhub files them
-  under calendar quarter ends, so three of four are announced *before* the label
-  they carry. Requiring the 8-K to fall strictly after the period end skipped
-  every one of them and silently took the next quarter's instead -- dating all
-  four rows one quarter late, and recording a single 8-K as both Q3 and Q4.
-  **19 of 175 symbols (11%) have this shape**, and 73 rows legitimately carry a
-  negative lag.
-- **Not every Item 2.02 filing is an earnings release.** Goldman Sachs filed one
-  on 2026-01-08, a week before its actual Q4 release on 2026-01-15; Honeywell
-  filed decoys on either side of two real releases. Taking the earliest filing
-  in the window picks the decoy -- seven days of lookahead.
+Two facts about the data drive the design:
 
-What separates a release from a decoy is cadence: a company announces at a
-near-constant offset from its period label. So the offset is measured from the
-company's own filing history, each period takes the filing closest to its
-expected date, no filing may serve two periods, and the estimate is iterated --
-because the first pass can itself claim a decoy, and correcting the pairing
-corrects the estimate. A filing too far off the company's own cadence is left
-unmatched, since a wrong date reintroduces the bias this exists to remove.
+- **Finnhub's `period` is not the fiscal close, and follows no fixed rule
+  relative to it.** Coca-Cola's quarter ending 2026-04-03 is labelled
+  2026-03-31, three days *before* the close; Applied Materials' ending
+  2026-07-26 is labelled 2026-09-30, sixty-six days *after*. Any window around
+  the label is ambiguous by a quarter one way or the other: narrow enough for
+  Apple and it misses Applied Materials, wide enough for Applied Materials and
+  Apple takes the previous quarter's release. So the close comes from SEC --
+  every 10-Q and 10-K carries a `reportDate`, and a 10-K closes Q4 while each
+  10-Q is Q1-Q3 by its distance from the prior year end. A Finnhub row is tied
+  to the close of the *same fiscal quarter*; two such closes are a year apart,
+  so at most one qualifies. The close is stored as `fiscal_period_end`.
+- **Not every Item 2.02 is an earnings release.** Tesla files a delivery report
+  two days into every quarter. Occidental, APA, Prudential, Super Micro, AbbVie,
+  Regeneron and others pre-announce a week or two after each close. These
+  streams are as regular as the real thing. With the close known, the release is
+  the **last Item 2.02 at least a week after the close and no later than the
+  10-Q/10-K** -- companies release before or with the periodic report, true in
+  1,684 of 1,686 quarters checked, and pre-announcements come earlier still.
 
-Validation after the fix, against filings read directly from SEC:
+That rule errs late rather than early. Robinhood furnishes monthly metrics under
+Item 2.02, so its dates can land a few days after the real release. Late costs a
+little timeliness; early hands a model a surprise before it existed.
 
-| | |
+| Invariant (1,693 rows with an exact close) | |
 |---|---|
-| Rows deviating >30 days from their own symbol's median lag | **0** of 690 |
-| Filings claimed by two periods | **0** |
-| Lag band | −43 to +57 days |
-| Still undated | 5 rows, all periods from 2000 |
+| Released under 7 days after the close | **0** |
+| Released more than 75 days after the close | **0** |
+| Filings claimed by two quarters | **0** |
+| Lag from close to release | 8 to 61 days, median 30 |
 
-The undated five are the system working: Item 2.02 did not exist before the SEC
-renumbered 8-K items in August 2004, and the submissions API returns only a
-filer's most recent ~1000 filings. An undated surprise is visibly unusable; a
-wrongly dated one is not.
+Twelve surprises stay undated, deliberately. Five are from 2000, before Item
+2.02 existed (earnings were Item 12 until August 2004). XOM, AES and OKE
+publish earnings under Item 7.01 (Reg FD), which companies also use for
+investor decks and conference slides, so accepting it would admit exactly the
+filings the matcher exists to reject. Berkshire releases results *with* its
+10-Q rather than in an 8-K. An undated surprise is visibly unusable; a wrongly
+dated one is not.
+
+Two further hygiene rules keep the surprise table honest:
+
+- **Quarters are reconciled by identity, not label.** Finnhub revises `period`
+  after the fact -- Paychex's fiscal Q1 2027 arrived as `2027-03-31` and was
+  re-issued as `2026-09-30` -- and withdraws quarters outright, as it did
+  Amcor's fiscal Q4 2026. Keyed on period, a relabel leaves the quarter stored
+  twice. Each refresh now drops a stored quarter whose fiscal year and quarter
+  come back under a new label, or which is later than everything Finnhub still
+  returns.
+- **Only companies are asked.** Per-symbol rotations spanned the 60 tracked
+  ETFs. Finnhub returned nothing for 59, and for VXX -- a VIX-futures ETN --
+  four quarters of earnings belonging to nothing. The insider feed returned 21
+  "insider trades" in USO that were Hudson River Trading's market-making
+  inventory, filed because it crossed 10% of the fund. Earnings, insider and
+  announcements now use index constituents only.
 
 ```python
 q.pit_earnings("2026-07-01", symbols=["HON"])
