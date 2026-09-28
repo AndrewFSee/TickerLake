@@ -293,6 +293,13 @@ filings the matcher exists to reject. Berkshire releases results *with* its
 10-Q rather than in an 8-K. An undated surprise is visibly unusable; a wrongly
 dated one is not.
 
+An undatable quarter is reported once. The first run that fails to date a
+recently reported quarter warns and stamps it `announcement_checked`; later runs
+retry it quietly, and quarters whose release window closed long ago never warn.
+Warning on every night that Exxon's 7.01 quarters were still undated made the
+warning meaningless, and a failure that is always present is the easiest kind
+to miss.
+
 Two further hygiene rules keep the surprise table honest:
 
 - **Quarters are reconciled by identity, not label.** Finnhub revises `period`

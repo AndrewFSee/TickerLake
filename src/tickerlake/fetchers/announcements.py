@@ -154,6 +154,9 @@ class AnnouncementFetcher(BaseFetcher):
             timeout=90,
         )
         resolved: list[dict[str, Any]] = []
+        # Symbols whose filings were actually read. Only these can be said to
+        # have no release on record: a lookup that failed says nothing.
+        examined: set[str] = set()
         anchored = 0
         try:
             cik_map = self._cik_map(client, symbols, result)
@@ -170,6 +173,8 @@ class AnnouncementFetcher(BaseFetcher):
                     result.items_failed += 1
                     self.log.debug("submissions %s: %s", symbol, exc)
                     continue
+                if recent:
+                    examined.add(symbol)
                 announcements = self._parse_202(recent)
                 anchors = self._anchors(
                     [(p, quarter_of.get((symbol, p))) for p in pending[symbol]],
@@ -182,31 +187,43 @@ class AnnouncementFetcher(BaseFetcher):
         finally:
             client.close()
 
-        if not resolved:
-            result.add_warning("no announcement dates could be matched")
-            return
+        result.details["symbols_anchored_on_fiscal_close"] = anchored
+        result.details["symbols_on_label_fallback"] = len(symbols) - anchored
 
-        # Join the resolved dates onto the full stored rows so every EPS field
-        # survives the write.
-        dates = pd.DataFrame(resolved)
         # Normalise both merge keys on both frames. Every failure in this area
         # has come from a key whose two sides looked identical but were not:
         # DuckDB returns strings as `category`, and a column of date objects is
         # re-inferred to datetime64 on assignment while a freshly built one
         # stays object. Either mismatch makes pandas raise while factorising the
         # key rather than compare by value.
-        for frame in (unmatched, dates):
-            frame["symbol"] = frame["symbol"].astype(str)
-            frame["period_key"] = pd.to_datetime(frame["period_key"], errors="coerce")
+        unmatched["symbol"] = unmatched["symbol"].astype(str)
+        unmatched["period_key"] = pd.to_datetime(unmatched["period_key"], errors="coerce")
+
+        dated = self._apply_dates(unmatched, resolved, result)
+        self._record_misses(unmatched, dated, examined, run_date, result)
+
+    def _apply_dates(
+        self, unmatched: pd.DataFrame, resolved: list[dict[str, Any]], result: FetchResult
+    ) -> set[tuple[str, pd.Timestamp]]:
+        """Write the resolved dates onto the full stored rows; return their keys."""
+        if not resolved:
+            return set()
+        # Join onto the full stored rows so every EPS field survives the write.
+        dates = pd.DataFrame(resolved)
+        dates["symbol"] = dates["symbol"].astype(str)
+        dates["period_key"] = pd.to_datetime(dates["period_key"], errors="coerce")
         df = unmatched.merge(dates, on=["symbol", "period_key"], how="inner", suffixes=("", "_new"))
         if df.empty:
             result.add_warning("resolved dates did not join back onto any stored row")
-            return
+            return set()
 
+        keys = set(zip(df["symbol"], df["period_key"], strict=True))
         df["announcement_date"] = df["announcement_date_new"]
         df["announcement_accession"] = df["announcement_accession_new"]
         if "fiscal_period_end_new" in df.columns:
             df["fiscal_period_end"] = df["fiscal_period_end_new"]
+        # A dated quarter is no longer a miss.
+        df["announcement_checked"] = None
         df = df.drop(columns=[c for c in df.columns if c.endswith("_new") or c == "period_key"])
         df["ingested_at"] = datetime.now(UTC)
 
@@ -216,8 +233,6 @@ class AnnouncementFetcher(BaseFetcher):
         result.record_write(write)
 
         lags = (pd.to_datetime(df["announcement_date"]) - pd.to_datetime(df["period"])).dt.days
-        result.details["symbols_anchored_on_fiscal_close"] = anchored
-        result.details["symbols_on_label_fallback"] = len(symbols) - anchored
         result.details.update(
             {
                 "periods_dated": len(df),
@@ -233,6 +248,81 @@ class AnnouncementFetcher(BaseFetcher):
             df["symbol"].nunique(),
             int(lags.median()),
         )
+        return keys
+
+    def _record_misses(
+        self,
+        unmatched: pd.DataFrame,
+        dated: set[tuple[str, pd.Timestamp]],
+        examined: set[str],
+        run_date: date,
+        result: FetchResult,
+    ) -> None:
+        """Note quarters that could not be dated, warning only about new ones.
+
+        Some quarters are undatable for good: Exxon, AES and ONEOK publish
+        earnings under Item 7.01 rather than 2.02, and Berkshire releases with
+        its 10-Q. Retrying them costs a request a night and is harmless, but
+        warning about them every night made the warning meaningless -- it fired
+        on a run where nothing new had gone wrong, which is how a real failure
+        gets ignored.
+
+        So a miss warns once: the first time a quarter is found undatable, and
+        only while its release could still be recent. A quarter whose window
+        closed long ago is history rather than news. Every miss is stamped
+        with ``announcement_checked`` so the next run knows it has been seen;
+        a broken matcher still shows up at once, as a burst of new misses
+        across companies that normally date cleanly.
+        """
+        if not examined or unmatched.empty:
+            return
+        # resolve_all re-examines rows that already carry a date; failing to
+        # re-find one is not a miss, and must not be recorded as one.
+        looked = unmatched["symbol"].isin(examined) & unmatched["announcement_date"].isna()
+        missed = looked & ~pd.Series(
+            [
+                (s, k) in dated
+                for s, k in zip(unmatched["symbol"], unmatched["period_key"], strict=True)
+            ],
+            index=unmatched.index,
+        )
+        if not missed.any():
+            return
+
+        # The latest a release can fall after its label, on either matching path.
+        window = max(
+            int(self.cfg("close_max_days_after_label", 10))
+            + int(self.cfg("max_days_after_quarter_end", 75)),
+            int(self.cfg("max_lag_days", 120)),
+        )
+        labels = pd.to_datetime(unmatched["period"]).dt.date
+        recent = labels.map(lambda d: (run_date - d).days <= window)
+        if "announcement_checked" in unmatched.columns:
+            first_time = unmatched["announcement_checked"].isna()
+        else:
+            first_time = pd.Series(True, index=unmatched.index)
+
+        new = unmatched[missed & recent & first_time]
+        known = int(missed.sum()) - len(new)
+        result.details["undated_known"] = known
+        result.details["undated_new"] = len(new)
+        if len(new):
+            listing = ", ".join(
+                f"{r.symbol} {pd.Timestamp(r.period).date()}" for r in new.head(8).itertuples()
+            )
+            result.add_warning(
+                f"{len(new)} recently reported quarter(s) could not be dated: {listing}"
+                + (" ..." if len(new) > 8 else "")
+            )
+        else:
+            self.log.info("%d quarter(s) remain undatable, none of them new", known)
+
+        stamped = unmatched[missed].drop(columns=["period_key"]).copy()
+        stamped["announcement_checked"] = run_date
+        write = self.writer.write(
+            stamped, P.EARNINGS, self.paths.earnings_file("surprises"), mode="merge"
+        )
+        result.record_write(write)
 
     # ---------------------------------------------------------------- inputs
 

@@ -226,6 +226,12 @@ EARNINGS_SCHEMA = pa.schema(
         # an off-calendar company can sit two months after the true close:
         # Applied Materials' quarter ending 2026-07-26 is labelled 2026-09-30.
         pa.field("fiscal_period_end", pa.date32(), nullable=True),
+        # The last run that looked for this quarter's release and found none.
+        # It is what lets an undatable quarter be reported once rather than
+        # every night: Exxon files its earnings under Item 7.01, so each new
+        # Exxon quarter would otherwise warn on every run for months. Cleared
+        # when the quarter is dated.
+        pa.field("announcement_checked", pa.date32(), nullable=True),
         pa.field("strong_buy", pa.int32()),
         pa.field("buy", pa.int32()),
         pa.field("hold", pa.int32()),
