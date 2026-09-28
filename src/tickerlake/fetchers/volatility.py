@@ -5,8 +5,10 @@ Three things, each chosen because the lake had no other source for it.
 **Index levels, daily.** FRED already supplies ``VIXCLS``, a single close per day
 for one index. CBOE publishes full OHLC history for its whole family --
 maturities from one day to one year, the volatility of VIX itself, SKEW, and
-the sector and asset-class indices -- in files that are current the same
-evening. They are CBOE's own numbers, so they are used in preference to
+the sector and asset-class indices. CBOE posts them in two evening batches,
+around 18:00 ET and 20:30 ET, which is after the nightly run; a day's bars are
+therefore written by the *next* run's lookback, one trading day late. They are
+CBOE's own numbers, so they are used in preference to
 Yahoo's, which carries no history at all for four of them (VIX1Y, VXEEM, VXSLV,
 VXAPL). The MOVE index is ICE's, not CBOE's, and comes from Yahoo.
 

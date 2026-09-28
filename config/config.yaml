@@ -381,7 +381,11 @@ volatility:
   enabled: true
   requests_per_second: 2.0
 
-  # CBOE's own daily history files (same-day fresh, back to 1990 for VIX).
+  # CBOE's own daily history files, back to 1990 for VIX. CBOE posts them in
+  # two evening batches - ~18:00 ET (VVIX, VIX3M, ...) and ~20:30 ET (VIX,
+  # SKEW) - after this stage has run at ~17:30, so a day's index bars land with
+  # the NEXT run's lookback. The VX contract files lag the same way. Nothing is
+  # lost; Friday's bars arrive on Monday. Minute bars (Yahoo) are same-day.
   indices:
     VIX:   "S&P 500, 30-day implied volatility"
     VIX1D: "S&P 500, 1-day"

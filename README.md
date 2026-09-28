@@ -441,6 +441,12 @@ VIX), SKEW (priced tail risk), VXN, VXD, the commodity and asset-class indices
 OVX, GVZ, VXSLV and VXEEM, VXAPL, and ICE's MOVE for Treasuries. SKEW and MOVE
 are published once a day, so they have no minute feed.
 
+**Daily index levels and futures settlements land one trading day late.** CBOE
+posts its files around 18:00 ET (VVIX, VIX3M and others) and 20:30 ET (VIX,
+SKEW), after the nightly run, so each day's values are written by the next
+run's lookback -- Friday's on Monday. Nothing is lost. The minute bars come from
+Yahoo and are same-day.
+
 Stored under a leading caret, they join to equities on the same date or
 timestamp and cannot collide with a ticker. They are deliberately not in the
 membership table, which drives every fetcher -- the ETFs registered there were
