@@ -269,3 +269,55 @@ def test_only_exact_closes_are_recorded(fetcher):
     projected = {date(2026, 3, 31): (date(2026, 3, 30), False, None)}
     row = fetcher._match("X", [date(2026, 3, 31)], fetcher._parse_202(recent), projected)[0]
     assert row["fiscal_period_end"] is None
+
+
+# ------------------------------------------------- fiscal-year changes and spin-offs
+
+
+def test_a_transition_report_closes_the_new_fiscal_year(fetcher):
+    """Ferguson moved its year end from July to December in 2025.
+
+    The change is marked by a 10-KT. Ignoring it numbered the March 2026
+    quarter from the July year end -- Q3 rather than Q1 -- so nothing anchored,
+    the symbol fell back to label matching, and two quarters were dated with
+    the previous quarter's release, ten to eleven weeks early.
+    """
+    recent = _recent(
+        [
+            ("10-Q", "2025-04-30", "2025-06-03"),
+            ("10-K", "2025-07-31", "2025-09-26"),
+            ("10-Q", "2025-10-31", "2025-12-09"),
+            ("10-KT", "2025-12-31", "2026-02-27"),
+            ("10-Q", "2026-03-31", "2026-05-05"),
+            ("10-Q", "2026-06-30", "2026-08-10"),
+        ],
+        ["2025-06-03", "2025-09-16", "2025-12-09", "2026-02-24", "2026-05-05", "2026-08-10"],
+    )
+    rows = [
+        (date(2025, 6, 30), 3),
+        (date(2025, 12, 31), 4),
+        (date(2026, 3, 31), 1),
+        (date(2026, 6, 30), 2),
+    ]
+    assert _date(fetcher, recent, rows) == {
+        date(2025, 6, 30): date(2025, 6, 3),
+        date(2025, 12, 31): date(2026, 2, 24),
+        date(2026, 3, 31): date(2026, 5, 5),
+        date(2026, 6, 30): date(2026, 8, 10),
+    }
+
+
+def test_a_spin_off_before_its_first_10k_still_anchors(fetcher):
+    """Honeywell Aerospace has one 10-Q and no 10-K yet.
+
+    Its quarter cannot be numbered, but it is the only close near the label,
+    so it still anchors. Without that it fell back to label matching and took
+    an Item 2.02 filed two days after the close -- a month before the release.
+    """
+    recent = _recent([("10-Q", "2026-06-27", "2026-08-05")], ["2026-06-29", "2026-08-05"])
+    assert _date(fetcher, recent, [(date(2026, 6, 30), 2)]) == {date(2026, 6, 30): date(2026, 8, 5)}
+
+
+def test_two_unnumbered_closes_near_one_label_are_not_guessed_between(fetcher):
+    closes = [(date(2026, 6, 1), None), (date(2026, 6, 27), None)]
+    assert fetcher._anchors([(date(2026, 6, 30), 2)], closes, {}) is None

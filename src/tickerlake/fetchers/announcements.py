@@ -410,7 +410,7 @@ class AnnouncementFetcher(BaseFetcher):
         return sorted(out)
 
     @staticmethod
-    def _quarter_closes(recent: dict[str, Any]) -> list[tuple[date, int]]:
+    def _quarter_closes(recent: dict[str, Any]) -> list[tuple[date, int | None]]:
         """(close, fiscal quarter) for every 10-Q and 10-K on record.
 
         ``reportDate`` is SEC's period of report: exactly the fiscal period end,
@@ -430,28 +430,38 @@ class AnnouncementFetcher(BaseFetcher):
         quarters: set[date] = set()
         for i, form in enumerate(forms):
             kind = str(form).split("/")[0]  # 10-K/A reports the same period
-            if kind not in ("10-K", "10-Q"):
+            if kind not in ("10-K", "10-KT", "10-Q"):
                 continue
             day = as_date(reports[i] if i < len(reports) else None)
             if day is not None:
-                (years if kind == "10-K" else quarters).add(day)
+                # A 10-KT is the transition report a company files when it
+                # changes fiscal year, and it closes the new year exactly as a
+                # 10-K would. Ignoring it numbered every later quarter from the
+                # old year end: Ferguson moved from July to December in 2025,
+                # its March 2026 quarter came out as Q3 rather than Q1, and the
+                # whole symbol fell back to label matching -- which dated two
+                # quarters with the previous quarter's release.
+                (years if kind in ("10-K", "10-KT") else quarters).add(day)
 
         ends = sorted(years)
-        out = [(d, 4) for d in ends]
+        out: list[tuple[date, int | None]] = [(d, 4) for d in ends]
         for day in sorted(quarters - years):
             prior = [e for e in ends if e < day]
+            later = [e for e in ends if e > day]
             if prior:
-                q = round((day - prior[-1]).days / 91.3)
-            else:
-                later = [e for e in ends if e > day]
-                if not later:
-                    continue
+                q: int | None = round((day - prior[-1]).days / 91.3)
+            elif later:
                 q = 4 - round((later[0] - day).days / 91.3)
-            # Anything else means a missing or transition filing; better to
-            # leave that quarter out than to number it wrongly.
-            if 1 <= q <= 3:
+            else:
+                # No year end on record at all -- a spin-off before its first
+                # 10-K, like Honeywell Aerospace. The close is still a fact;
+                # it just cannot be numbered.
+                q = None
+            if q is None or 1 <= q <= 3:
                 out.append((day, q))
-        return sorted(out)
+            # Anything else means a missing filing; better to leave that
+            # quarter out than to number it wrongly.
+        return sorted(out, key=lambda c: c[0])
 
     @staticmethod
     def _report_filed(recent: dict[str, Any]) -> dict[date, date]:
@@ -465,7 +475,7 @@ class AnnouncementFetcher(BaseFetcher):
         filed = recent.get("filingDate") or []
         out: dict[date, date] = {}
         for i, form in enumerate(forms):
-            if str(form).split("/")[0] not in ("10-K", "10-Q"):
+            if str(form).split("/")[0] not in ("10-K", "10-KT", "10-Q"):
                 continue
             close = as_date(reports[i] if i < len(reports) else None)
             day = as_date(filed[i] if i < len(filed) else None)
@@ -476,7 +486,7 @@ class AnnouncementFetcher(BaseFetcher):
     def _anchors(
         self,
         rows: list[tuple[date, int | None]],
-        closes: list[tuple[date, int]],
+        closes: list[tuple[date, int | None]],
         filed: dict[date, date] | None = None,
     ) -> dict[date, tuple[date, bool, date | None]] | None:
         """Each period's real fiscal close, or None to fall back on the label.
@@ -512,6 +522,13 @@ class AnnouncementFetcher(BaseFetcher):
             lo, hi = label - timedelta(days=before), label + timedelta(days=after)
             same = [d for d, q in closes if q == fq]
             inside = [d for d in same if lo <= d <= hi]
+            if not inside:
+                # An unnumbered close may stand in when it is the only one near
+                # the label. The window is shorter than a quarter, so two
+                # regular closes cannot both fall inside it.
+                loose = [d for d, q in closes if q is None and lo <= d <= hi]
+                if len(loose) == 1:
+                    inside = loose
             if inside:
                 close = max(inside)
                 out[label] = (close, True, filed.get(close))
