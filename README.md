@@ -304,11 +304,12 @@ Two further hygiene rules keep the surprise table honest:
 
 - **Quarters are reconciled by identity, not label.** Finnhub revises `period`
   after the fact -- Paychex's fiscal Q1 2027 arrived as `2027-03-31` and was
-  re-issued as `2026-09-30` -- and withdraws quarters outright, as it did
-  Amcor's fiscal Q4 2026. Keyed on period, a relabel leaves the quarter stored
-  twice. Each refresh now drops a stored quarter whose fiscal year and quarter
-  come back under a new label, or which is later than everything Finnhub still
-  returns.
+  re-issued as `2026-09-30`. Keyed on period, a relabel leaves the quarter stored
+  twice, so each refresh drops a stored quarter whose fiscal year and quarter
+  come back under a new label. A quarter that merely *disappears* from Finnhub's
+  answer is kept: this once deleted them as "withdrawn", until Finnhub's feed
+  for Amcor slid backwards and the rule destroyed a genuine quarter. A stale
+  feed and a retraction look the same from here.
 - **Only companies are asked.** Per-symbol rotations spanned the 60 tracked
   ETFs. Finnhub returned nothing for 59, and for VXX -- a VIX-futures ETN --
   four quarters of earnings belonging to nothing. The insider feed returned 21

@@ -10,8 +10,9 @@ Two faults, both found in the lake:
 
 * **Quarters that change their label.** Finnhub revises ``period``: Paychex's
   fiscal Q1 2027 arrived as ``2027-03-31`` and was re-issued as ``2026-09-30``.
-  Keyed on period, the corrected row lands beside the stale one. And Finnhub
-  withdraws quarters outright -- Amcor's fiscal Q4 2026 vanished from its answer.
+  Keyed on period, the corrected row lands beside the stale one. A quarter
+  that merely vanishes from Finnhub's answer is kept: Amcor's feed slid
+  backwards, and deleting what disappeared destroyed a genuine quarter.
 """
 
 from __future__ import annotations
@@ -170,47 +171,28 @@ def test_a_relabelled_quarter_is_stored_once(lake):
     assert result.details["surprises_relabelled"] == 1
 
 
-def test_a_withdrawn_quarter_is_removed(lake):
-    """Amcor: the lake held fiscal Q4 2026; Finnhub now tops out at Q3.
+def test_a_quarter_missing_from_finnhubs_answer_is_kept(lake):
+    """Amcor: Finnhub's feed slid backwards and stopped returning fiscal Q3 2026.
 
-    The endpoint returns the latest quarters, so a stored quarter later than
-    all of them cannot have aged out -- it was retracted.
+    That quarter was real -- reported in April 2026 -- and deleting it on the
+    theory that a vanished quarter was retracted destroyed genuine data. A
+    stale feed and a retraction look identical from here, so nothing goes.
     """
     out, result = _run(
         lake,
         [
             _stored("AMCR", date(2026, 3, 31), 2026, 3, 0.96),
-            _stored("AMCR", date(2026, 12, 31), 2026, 4, 1.23),
+            _stored("AMCR", date(2025, 12, 31), 2026, 2, 0.86),
         ],
         {
             "AMCR": _finnhub(
-                ("2026-03-31", 2026, 3, 0.96),
                 ("2025-12-31", 2026, 2, 0.86),
                 ("2025-09-30", 2026, 1, 0.965),
+                ("2025-06-30", 2025, 4, 1.0),
             )
         },
     )
-    assert not ((out["fiscal_year"] == 2026) & (out["fiscal_quarter"] == 4)).any()
-    assert result.details["surprises_withdrawn"] == 1
-
-
-def test_older_quarters_outside_the_window_are_kept(lake):
-    """Finnhub's free tier returns four quarters; older history is not a retraction."""
-    out, _ = _run(
-        lake,
-        [_stored("AAPL", date(2024, 6, 30), 2024, 3, 1.40)],
-        {"AAPL": _finnhub(("2026-06-30", 2026, 3, 1.57), ("2026-03-31", 2026, 2, 1.65))},
-    )
-    assert (out["period"] == date(2024, 6, 30)).any()
-
-
-def test_a_one_row_answer_is_too_thin_to_infer_a_withdrawal(lake):
-    out, result = _run(
-        lake,
-        [_stored("AMCR", date(2026, 12, 31), 2026, 4, 1.23)],
-        {"AMCR": _finnhub(("2026-03-31", 2026, 3, 0.96))},
-    )
-    assert (out["period"] == date(2026, 12, 31)).any()
+    assert ((out["fiscal_year"] == 2026) & (out["fiscal_quarter"] == 3)).any()
     assert "surprises_withdrawn" not in result.details
 
 

@@ -183,7 +183,7 @@ class EarningsFetcher(BaseFetcher):
         returned: dict[str, dict[tuple[int, int], date]],
         result: FetchResult,
     ) -> None:
-        """Drop stored quarters that Finnhub has since relabelled or withdrawn.
+        """Drop stored quarters that Finnhub has since relabelled.
 
         The natural key is (symbol, record_type, period), but ``period`` is not
         a stable identity -- Finnhub revises it. Paychex's fiscal Q1 2027 was
@@ -192,12 +192,14 @@ class EarningsFetcher(BaseFetcher):
         the stale one survives beside it and the quarter exists twice. The fiscal
         quarter is the stable identity, so two rows for it means one is stale.
 
-        Finnhub also withdraws quarters outright. The lake held Amcor's fiscal Q4
-        2026 (EPS 1.23, labelled ``2026-12-31``); Finnhub's current answer tops
-        out at Q3. The endpoint returns the *latest* quarters, so a stored
-        quarter later than everything it now returns cannot have aged out of the
-        window -- it was retracted, and keeping it keeps a surprise that does not
-        exist.
+        A quarter that merely *disappears* from Finnhub's answer is kept. This
+        once deleted them, on the theory that the endpoint returns the latest
+        quarters so a missing newer one must have been retracted. Finnhub's
+        free feed for Amcor then slid backwards -- its newest quarter went from
+        fiscal Q3 2026 to Q2 -- and the rule deleted Amcor's genuine Q3, reported
+        in April 2026. "Vanished" is as likely a stale feed as a retraction, and
+        the two cannot be told apart from here; deleting real data is the worse
+        mistake.
 
         Announcement dates are deliberately not carried across a relabel. A date
         matched against the wrong label is suspect, and the announcements stage
@@ -212,33 +214,25 @@ class EarningsFetcher(BaseFetcher):
             return
 
         drop = pd.Series(False, index=stored.index)
-        relabelled = retracted = 0
+        relabelled = 0
         for symbol, quarters in returned.items():
             mine = (stored["symbol"] == symbol) & stored["fiscal_year"].notna()
             if not mine.any():
                 continue
             periods = pd.to_datetime(stored["period"]).dt.date
-            newest = max(quarters)
             for idx in stored.index[mine]:
                 key = (int(stored.at[idx, "fiscal_year"]), int(stored.at[idx, "fiscal_quarter"]))
-                if key in quarters:
-                    if periods[idx] != quarters[key]:
-                        drop[idx] = True
-                        relabelled += 1
-                # Only trust a withdrawal when Finnhub returned a real window;
-                # a one-row answer is too thin to conclude anything is missing.
-                elif key > newest and len(quarters) >= 2:
+                if key in quarters and periods[idx] != quarters[key]:
                     drop[idx] = True
-                    retracted += 1
+                    relabelled += 1
 
         if not drop.any():
             return
 
         gone = stored.loc[drop, ["symbol", "fiscal_year", "fiscal_quarter", "period"]]
         self.log.info(
-            "reconciled surprises: dropped %d relabelled and %d withdrawn quarter(s): %s",
+            "reconciled surprises: dropped %d relabelled quarter(s): %s",
             relabelled,
-            retracted,
             ", ".join(
                 f"{r.symbol} FY{int(r.fiscal_year)}Q{int(r.fiscal_quarter)}@{r.period}"
                 for r in gone.head(10).itertuples()
@@ -248,7 +242,6 @@ class EarningsFetcher(BaseFetcher):
             stored.loc[~drop].reset_index(drop=True), P.EARNINGS, path, mode="overwrite"
         )
         result.details["surprises_relabelled"] = relabelled
-        result.details["surprises_withdrawn"] = retracted
 
     # ------------------------------------------------------- recommendations
 
