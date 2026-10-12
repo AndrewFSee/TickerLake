@@ -350,3 +350,55 @@ def test_index_refresh_does_not_touch_etfs(dual_tracker):
 def test_default_tracker_collects_only_its_index(tracker):
     """Without collect_indices, behaviour is unchanged."""
     assert tracker.collect_indices == ["SP500"]
+
+
+# ------------------------------------------------------------- ticker changes
+
+
+def _company(symbol, added=None):
+    return LiveConstituent(symbol=symbol, company_name=f"{symbol} Inc", date_added=added)
+
+
+@pytest.fixture
+def paramount(tracker):
+    """PSKY in the index, observed on 2026-10-07; renamed SKYD by the 8th."""
+    tracker.seed(
+        _seed_frame(
+            [
+                {"symbol": "PSKY", "start_date": date(2025, 8, 8), "end_date": None},
+                {"symbol": "KEEP", "start_date": date(2010, 1, 1), "end_date": None},
+            ]
+        ),
+        force=True,
+    )
+    tracker.refresh([_company("PSKY"), _company("KEEP")], observed_date=date(2026, 10, 7))
+    return tracker
+
+
+def test_a_renamed_ticker_starts_when_it_first_appears(paramount):
+    """Paramount Skydance became SKYD in October 2026.
+
+    Wikipedia carried the company's original add date across the change, and
+    trusting it made SKYD a member since 2010 -- fifteen years of fabricated
+    membership, and the company counted twice alongside PSKY for fourteen
+    months. The new symbol must begin exactly where the old one ends.
+    """
+    paramount.refresh(
+        [_company("SKYD", added=date(1994, 9, 30)), _company("KEEP")],
+        observed_date=date(2026, 10, 8),
+    )
+    assert paramount.members_on(date(2015, 6, 1)) == ["KEEP"], "no fabricated history"
+    assert "PSKY" in paramount.members_on(date(2026, 10, 7))
+    assert "SKYD" not in paramount.members_on(date(2026, 10, 7)), "never both at once"
+    assert "SKYD" in paramount.members_on(date(2026, 10, 8))
+    assert "PSKY" not in paramount.members_on(date(2026, 10, 8))
+
+
+def test_a_recent_stated_add_date_is_still_believed(paramount):
+    """Wikipedia updates late -- Vylor's addition appeared a week after it took effect."""
+    paramount.refresh(
+        [_company("PSKY"), _company("KEEP"), _company("VYLR", added=date(2026, 10, 1))],
+        observed_date=date(2026, 10, 8),
+    )
+    assert "VYLR" in paramount.members_on(date(2026, 10, 1))
+    assert "VYLR" not in paramount.members_on(date(2026, 9, 30))

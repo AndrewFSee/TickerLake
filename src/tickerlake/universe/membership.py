@@ -361,9 +361,11 @@ class MembershipTracker:
                 {
                     "symbol": symbol,
                     "index_name": self.index_name,
-                    # Wikipedia's "date added" is authoritative when it is not in
-                    # the future and not before our history window.
-                    "start_date": _best_start_date(constituent, observed_date, self.history_start),
+                    # Wikipedia's "date added" is authoritative when it is recent;
+                    # see _best_start_date for why an old one is not.
+                    "start_date": _best_start_date(
+                        constituent, observed_date, self.history_start, prior_observed
+                    ),
                     "end_date": None,
                     "company_name": constituent.company_name,
                     "gics_sector": constituent.gics_sector,
@@ -672,12 +674,35 @@ def _normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# How far before the previous observation a newly appearing symbol's stated
+# "date added" may fall and still be believed. Wikipedia's table often updates a
+# few days after the effective date -- Vylor's addition showed up a week late.
+MAX_BACKDATE_DAYS = 14
+
+
 def _best_start_date(
-    constituent: LiveConstituent, observed_date: date, history_start: date | None
+    constituent: LiveConstituent,
+    observed_date: date,
+    history_start: date | None,
+    prior_observed: date | None = None,
 ) -> date:
-    """Prefer Wikipedia's stated 'date added' when it is sane, else today."""
+    """Prefer Wikipedia's stated 'date added' when it is recent, else today.
+
+    A symbol that appears in a daily refresh was not in the index at the last
+    observation, so a stated add date long before then cannot be its own. It is
+    a date carried across a ticker change: Paramount Skydance became SKYD in
+    October 2026 and Wikipedia kept the original add date, which clamped to the
+    start of history made SKYD a member since 2010 -- fabricating fifteen years
+    of membership and double-counting the company alongside PSKY for its last
+    fourteen months. Such a symbol starts the day it first appears, which is
+    exactly where its predecessor's interval ends.
+    """
     candidate = constituent.date_added
     if candidate is None or candidate > observed_date:
+        return observed_date
+    if prior_observed is not None and candidate < prior_observed - timedelta(
+        days=MAX_BACKDATE_DAYS
+    ):
         return observed_date
     if history_start is not None and candidate < history_start:
         return history_start
