@@ -46,6 +46,15 @@ ohlcv:
   # Days of history re-fetched each run. Yahoo revises recent bars, and a
   # merge-on-write makes re-fetching them free of duplicates.
   lookback_days: 5
+  # Days downloaded (not written) to check stored bars against Yahoo's current
+  # view. A split recorded after we stored a symbol's bars rescales Yahoo's
+  # history and not ours - Corteva's 10/2026 spin-off left an 84% fake drop.
+  # When every older bar in this window disagrees by one constant ratio, the
+  # symbol's full history is fetched again.
+  rescale_check_days: 35
+  rescale_tolerance: 0.02    # a bar must miss by more than 2% to count
+  rescale_min_bars: 3        # ...and at least this many must share the ratio
+  max_rescaled: 25           # above this, warn instead of rewriting history
   include_actions: true   # dividends + splits, needed to build adjusted series later
   # Backfill uses larger, slower batches since it is a one-time cost.
   backfill_batch_size: 25

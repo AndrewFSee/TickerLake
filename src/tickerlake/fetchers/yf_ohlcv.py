@@ -6,7 +6,10 @@ Two modes share one code path:
   each month's consolidated ``data.parquet`` with merge semantics.
 * **incremental** (the daily run) -- a short lookback window rather than just
   yesterday, because Yahoo revises recent bars (splits, late corrections) and a
-  merge-on-write makes re-fetching them free of duplicates.
+  merge-on-write makes re-fetching them free of duplicates. It downloads a
+  longer window than it writes so stored bars can be checked against Yahoo's
+  current view; a symbol whose history Yahoo has since rescaled gets that
+  whole history again (see ``_against_stored``).
 
 Rows are always routed to the partition of the **bar's own date**, not the run
 date. A Monday run covering the previous Thursday must not file Thursday's bar
@@ -22,6 +25,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -70,6 +74,9 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
         backfill_start = _as_date(self.cfg("start_date", "2010-01-01"))
         end = run_date + timedelta(days=1)
+        # Only the incremental run has a written window narrower than what it
+        # downloads; a backfill writes everything it asks for.
+        write_from: date | None = None
 
         if self.backfill:
             plans = [("backfilling", symbols, backfill_start)]
@@ -78,13 +85,17 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         else:
             # Five calendar days comfortably covers a long weekend plus a holiday,
             # so a run that is skipped for a couple of days still self-heals.
-            lookback = run_date - timedelta(days=int(self.cfg("lookback_days", 5)))
+            write_from = run_date - timedelta(days=int(self.cfg("lookback_days", 5)))
+            # The download reaches further back than the write, purely so stored
+            # bars can be compared against Yahoo's current view of them -- see
+            # _against_stored. Same number of requests; only the payload grows.
+            check_from = run_date - timedelta(days=int(self.cfg("rescale_check_days", 35)))
             batch_size = int(self.cfg("batch_size", 50))
             throttle = float(self.cfg("throttle_seconds", 1.0))
 
             newcomers = self._newcomers(symbols, run_date, result)
             regular = [s for s in symbols if s not in newcomers]
-            plans = [("fetching", regular, lookback)]
+            plans = [("fetching", regular, min(write_from, check_from))]
             if newcomers:
                 plans.append((NEWCOMER_LABEL, newcomers, backfill_start))
                 self.log.info(
@@ -120,9 +131,22 @@ class YFinanceOHLCVFetcher(BaseFetcher):
                 size,
                 throttle,
             )
-            self._fetch_range(group, group_start, end, size, limiter, result, frames, observations)
+            got: list[pd.DataFrame] = []
+            self._fetch_range(group, group_start, end, size, limiter, result, got, observations)
             if label == NEWCOMER_LABEL:
                 backfilled = list(group)
+            elif write_from is not None and got:
+                window = pd.concat(got, ignore_index=True)
+                window, rescaled = self._against_stored(window, write_from, result)
+                if rescaled:
+                    window = window[~window["symbol"].isin(rescaled)]
+                    got = [
+                        window,
+                        *self._refetch_history(rescaled, backfill_start, end, limiter, result),
+                    ]
+                else:
+                    got = [window]
+            frames.extend(got)
 
         if not frames:
             result.add_error("no OHLCV data returned for any symbol")
@@ -225,6 +249,144 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
         earliest = {str(row.symbol): as_date(row.first_bar) for row in stored.itertuples()}
         return [s for s in symbols if (earliest.get(s) or date.max) >= cutoff]
+
+    # ------------------------------------------------- revisions of stored bars
+
+    def _against_stored(
+        self, window: pd.DataFrame, write_from: date, result: FetchResult
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Compare a fresh download with the bars already stored for those days.
+
+        Returns the rows to write -- those from ``write_from`` on, minus any that
+        would replace a good stored bar with a worse one -- and the symbols whose
+        whole history Yahoo has rescaled since we stored it.
+
+        Rescaled history. ``close`` is only split-adjusted as of the day a row is
+        written; a split recorded afterwards rescales Yahoo's past bars and none
+        of ours. Corteva's 2026-10-01 spin-off of Vylor is recorded as a 6.665
+        split, which Yahoo applied a few days after the fact: its 9/30 close is
+        now 11.65 and ours stayed 77.65, so the stored series fell 84% overnight.
+        The tell is every older overlapping bar disagreeing by one constant ratio
+        -- 0.150038 for each of CTVA's fourteen -- and the cure is that symbol's
+        full history again. A constant ratio is required, not just a mismatch:
+        Yahoo serves PSKY as an alias of SKYD and yfinance's repair pass nudges
+        those bars by anywhere from 0.7% to 7.6%, which is noise, not a rescale.
+
+        Degraded bars. Once a listing ends Yahoo can serve a broken copy of its
+        last session. Warner Bros. Discovery's final day, 2026-10-05, traded about
+        98M shares; three days later it came back with a volume of 40 and a
+        made-up open, and the lookback wrote it over the good bar. A refreshed
+        bar whose volume has collapsed to under 1% of the stored one keeps the
+        stored bar instead.
+        """
+        if window.empty:
+            return window, []
+        from tickerlake.storage.query import LakeQuery
+
+        symbols = sorted(window["symbol"].unique())
+        placeholders = ",".join("?" * len(symbols))
+        try:
+            with LakeQuery(self.paths.root) as q:
+                stored = q.sql(
+                    "SELECT symbol, date, close, volume FROM ohlcv "
+                    f"WHERE symbol IN ({placeholders}) AND date >= ?",
+                    [*symbols, min(window["date"])],
+                )
+        except Exception as exc:
+            # Nothing stored to compare against (a young lake) is not an error.
+            self.log.debug("could not read stored bars for comparison: %s", exc)
+            stored = pd.DataFrame()
+
+        rescaled: list[str] = []
+        degraded = pd.Series(False, index=window.index)
+        if not stored.empty:
+            stored = stored.assign(date=stored["date"].map(as_date))
+            both = (
+                window[["symbol", "date", "close", "volume"]]
+                .reset_index()
+                .merge(stored, on=["symbol", "date"], suffixes=("", "_stored"))
+            )
+            rescaled = _rescaled_symbols(
+                both,
+                tolerance=float(self.cfg("rescale_tolerance", 0.02)),
+                min_bars=int(self.cfg("rescale_min_bars", 3)),
+            )
+            collapsed = both[
+                ~both["symbol"].isin(rescaled)
+                & (both["volume_stored"] > 0)
+                & (both["volume"].fillna(0) < 0.01 * both["volume_stored"])
+            ]
+            degraded.loc[collapsed["index"]] = True
+            for row in collapsed.itertuples():
+                self.log.warning(
+                    "%s %s: refreshed bar has volume %s against %s stored; keeping the stored bar",
+                    row.symbol,
+                    row.date,
+                    row.volume,
+                    row.volume_stored,
+                )
+            if len(collapsed):
+                result.details["kept_stored_bars"] = [
+                    f"{r.symbol} {r.date}" for r in collapsed.itertuples()
+                ]
+
+        ceiling = int(self.cfg("max_rescaled", 25))
+        if len(rescaled) > ceiling:
+            # A mass "rescale" is a vendor-side event, not two dozen corporate
+            # actions, and rewriting that much history on a hunch is how a lake
+            # gets damaged. Say so and leave it to a person.
+            result.add_warning(
+                f"{len(rescaled)} symbols look rescaled, above the {ceiling} plausible "
+                "in one night; not refetching. Inspect before running "
+                "`tickerlake backfill ohlcv --symbols ...`."
+            )
+            rescaled = []
+        elif rescaled:
+            result.add_warning(
+                f"{len(rescaled)} symbol(s) rescaled by the vendor since stored; "
+                f"refetching full history: {', '.join(rescaled)}"
+            )
+            result.details["rescaled_history"] = rescaled
+
+        keep = ~degraded & (
+            (window["date"].map(as_date) >= write_from) | window["symbol"].isin(rescaled)
+        )
+        return window[keep], rescaled
+
+    def _refetch_history(
+        self,
+        symbols: list[str],
+        start: date,
+        end: date,
+        limiter: AdaptiveThrottle,
+        result: FetchResult,
+    ) -> list[pd.DataFrame]:
+        """Full history for symbols already counted once this run.
+
+        Not routed through ``_fetch_range``: that counts each symbol as an item,
+        and these were counted by the window that found them.
+        """
+        frames: list[pd.DataFrame] = []
+        for i in range(0, len(symbols), 25):
+            batch = symbols[i : i + 25]
+            limiter.wait()
+            try:
+                frame = self._download(batch, start, end)
+                limiter.record_success()
+            except Exception as exc:
+                if is_rate_limit_error(exc):
+                    limiter.record_rate_limit()
+                result.add_error(f"history refetch for {', '.join(batch)} failed: {exc}")
+                continue
+            if frame is not None and not frame.empty:
+                frames.append(frame)
+            missing = set(batch) - (set(frame["symbol"]) if frame is not None else set())
+            if missing:
+                result.add_error(
+                    f"history refetch returned nothing for {', '.join(sorted(missing))}; "
+                    "their stored history is still on the old scale"
+                )
+        return frames
 
     # ------------------------------------------------------------- downloads
 
@@ -366,7 +528,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         out["ingested_at"] = now
         # A bar with no close is Yahoo padding a non-trading day, not real data.
         out = out.dropna(subset=["date", "close"])
-        return out
+        return _drop_trailing_filler(out)
 
     # --------------------------------------------------------------- writing
 
@@ -417,3 +579,52 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
 def _as_date(value: str | date) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def _rescaled_symbols(both: pd.DataFrame, tolerance: float, min_bars: int) -> list[str]:
+    """Symbols whose stored closes disagree with Yahoo's by one constant ratio.
+
+    ``both`` holds the overlap of a download with the stored bars: ``close`` and
+    ``close_stored`` per (symbol, date). A rescale moves every bar before the
+    event by the same factor, so at least ``min_bars`` of them must miss by more
+    than ``tolerance`` and agree with each other to within half a percent. The
+    one-cent floor keeps sub-penny names, where a tick is 50%, from qualifying.
+    """
+    valid = both[(both["close"] > 0) & (both["close_stored"] > 0)]
+    ratio = valid["close"] / valid["close_stored"]
+    off = valid[
+        ((ratio - 1).abs() > tolerance) & ((valid["close"] - valid["close_stored"]).abs() > 0.01)
+    ]
+    found: list[str] = []
+    for symbol, rows in off.groupby("symbol"):
+        if len(rows) < min_bars:
+            continue
+        logs = np.log(rows["close"] / rows["close_stored"])
+        if float(logs.max() - logs.min()) < 0.005:
+            found.append(str(symbol))
+    return sorted(found)
+
+
+def _drop_trailing_filler(bars: pd.DataFrame) -> pd.DataFrame:
+    """Remove the flat, zero-volume bars Yahoo pads onto an ended listing.
+
+    After Electronic Arts' last session on 2026-08-04 Yahoo served four more
+    days at exactly 209.70 with no volume, Equity Residential four after its
+    last, Leggett & Platt one. Nothing traded, so they are not sessions; kept,
+    they extend a dead listing and make it look alive to the delisting check.
+    Only a *trailing* run is removed. A live symbol's latest bar always has
+    volume, and a flat zero-volume bar mid-series is left for someone to judge.
+    """
+    if bars.empty:
+        return bars
+    bars = bars.sort_values("date")
+    flat = (
+        (bars["volume"].fillna(0) == 0)
+        & (bars["open"] == bars["high"])
+        & (bars["high"] == bars["low"])
+        & (bars["low"] == bars["close"])
+    )
+    # Position of the last real bar; everything after it is filler.
+    real = (~flat).to_numpy().nonzero()[0]
+    cut = real[-1] + 1 if len(real) else 0
+    return bars.iloc[:cut]

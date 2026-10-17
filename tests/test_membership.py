@@ -402,3 +402,100 @@ def test_a_recent_stated_add_date_is_still_believed(paramount):
     )
     assert "VYLR" in paramount.members_on(date(2026, 10, 1))
     assert "VYLR" not in paramount.members_on(date(2026, 9, 30))
+
+
+# ------------------------------------------------- when a removal took effect
+
+
+def _listed(symbol, cik=None, added=None):
+    return LiveConstituent(symbol=symbol, company_name=f"{symbol} Inc", cik=cik, date_added=added)
+
+
+@pytest.fixture
+def acquired(tracker):
+    """WBD in the index and last seen listed on 2026-10-07; its last bar was 10/5."""
+    tracker.seed(
+        _seed_frame(
+            [
+                {"symbol": "WBD", "start_date": date(2022, 4, 11), "end_date": None},
+                {"symbol": "KEEP", "start_date": date(2010, 1, 1), "end_date": None},
+            ]
+        ),
+        force=True,
+    )
+    tracker.refresh([_listed("WBD"), _listed("KEEP")], observed_date=date(2026, 10, 7))
+    return tracker
+
+
+def test_a_removal_ends_on_the_last_session_when_prices_stopped_first(acquired):
+    """Warner Bros. Discovery's last session was 10/5 and Wikipedia dropped it on 10/8.
+
+    Ending it at the last observation kept it a member for two days with no
+    price, overlapping the name that replaced it.
+    """
+    acquired.record_data_observations({"WBD": date(2026, 10, 5)})
+    acquired.refresh([_listed("KEEP")], observed_date=date(2026, 10, 8))
+
+    assert "WBD" in acquired.members_on(date(2026, 10, 5))
+    assert "WBD" not in acquired.members_on(date(2026, 10, 6))
+
+
+def test_a_removal_that_still_trades_keeps_the_observed_end(acquired):
+    """Corteva left the index after its spin-off and kept trading."""
+    acquired.record_data_observations({"WBD": date(2026, 10, 8)})
+    acquired.refresh([_listed("KEEP")], observed_date=date(2026, 10, 8))
+
+    assert "WBD" in acquired.members_on(date(2026, 10, 7))
+    assert "WBD" not in acquired.members_on(date(2026, 10, 8))
+
+
+def test_a_stale_last_bar_does_not_backdate_a_removal(acquired):
+    """A last bar weeks old points at a collection gap, not at the listing's end."""
+    acquired.record_data_observations({"WBD": date(2026, 9, 1)})
+    acquired.refresh([_listed("KEEP")], observed_date=date(2026, 10, 8))
+
+    assert "WBD" in acquired.members_on(date(2026, 10, 7))
+
+
+def test_a_ticker_change_is_stitched_by_cik(tracker):
+    """PSKY became SKYD on 10/6; Wikipedia showed the change on 10/8.
+
+    The same CIK leaving under one symbol and arriving under another is one
+    company, so the new symbol starts the day after the old one's last session
+    -- neither a gap in which the company is missing, nor an overlap.
+    """
+    tracker.seed(
+        _seed_frame(
+            [
+                {"symbol": "PSKY", "start_date": date(2025, 8, 8), "end_date": None},
+                {"symbol": "KEEP", "start_date": date(2010, 1, 1), "end_date": None},
+            ]
+        ),
+        force=True,
+    )
+    tracker.refresh(
+        [_listed("PSKY", cik="0002041610"), _listed("KEEP")], observed_date=date(2026, 10, 7)
+    )
+    tracker.record_data_observations({"PSKY": date(2026, 10, 5)})
+    tracker.refresh(
+        [_listed("SKYD", cik="2041610", added=date(1994, 9, 30)), _listed("KEEP")],
+        observed_date=date(2026, 10, 8),
+    )
+
+    for day in (date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7), date(2026, 10, 8)):
+        members = tracker.members_on(day)
+        assert ("PSKY" in members) != ("SKYD" in members), f"exactly one on {day}"
+    assert "SKYD" in tracker.members_on(date(2026, 10, 6))
+    row = tracker.load().query("symbol == 'SKYD'").iloc[0]
+    assert "ticker change from PSKY" in row["reason_added"]
+
+
+def test_an_unrelated_addition_is_not_mistaken_for_a_rename(acquired):
+    """Twilio replaced WBD with a CIK of its own and keeps its stated add date."""
+    acquired.refresh(
+        [_listed("KEEP"), _listed("TWLO", cik="0001447669", added=date(2026, 10, 6))],
+        observed_date=date(2026, 10, 8),
+    )
+    row = acquired.load().query("symbol == 'TWLO'").iloc[0]
+    assert pd.Timestamp(row["start_date"]).date() == date(2026, 10, 6)
+    assert row["reason_added"] == "detected:live_universe"

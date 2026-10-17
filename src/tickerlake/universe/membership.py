@@ -353,25 +353,45 @@ class MembershipTracker:
             set(df.loc[mask_index & df["end_date"].notna(), "symbol"]) if len(df) else set()
         )
 
+        # Each removal's end, and who it was by CIK, so that a ticker change --
+        # the same company leaving under one symbol and arriving under another
+        # -- can be stitched with neither a gap nor an overlap.
+        removal_ends: dict[str, date] = {}
+        removed_by_cik: dict[str, str] = {}
+        for row in rows:
+            if (
+                row.get("index_name") == self.index_name
+                and row["symbol"] in removed
+                and pd.isna(row.get("end_date"))
+            ):
+                removal_ends[row["symbol"]] = _last_session(row, end_date)
+                cik = _cik_key(row.get("cik"))
+                if cik:
+                    removed_by_cik[cik] = row["symbol"]
+
         for symbol in added:
             constituent = live_by_symbol[symbol]
             if symbol in closed_symbols:
                 diff.re_entered.append(symbol)
+            # Wikipedia's "date added" is authoritative when it is recent; see
+            # _best_start_date for why an old one is not.
+            start = _best_start_date(constituent, observed_date, self.history_start, prior_observed)
+            reason = "detected:live_universe"
+            predecessor = removed_by_cik.get(_cik_key(constituent.cik) or "")
+            if predecessor and predecessor != symbol:
+                start = removal_ends[predecessor] + timedelta(days=1)
+                reason = f"detected:live_universe (ticker change from {predecessor})"
             rows.append(
                 {
                     "symbol": symbol,
                     "index_name": self.index_name,
-                    # Wikipedia's "date added" is authoritative when it is recent;
-                    # see _best_start_date for why an old one is not.
-                    "start_date": _best_start_date(
-                        constituent, observed_date, self.history_start, prior_observed
-                    ),
+                    "start_date": start,
                     "end_date": None,
                     "company_name": constituent.company_name,
                     "gics_sector": constituent.gics_sector,
                     "gics_sub_industry": constituent.gics_sub_industry,
                     "cik": constituent.cik,
-                    "reason_added": "detected:live_universe",
+                    "reason_added": reason,
                     "reason_removed": None,
                     "source": "wikipedia",
                     "first_seen_utc": now,
@@ -388,10 +408,10 @@ class MembershipTracker:
                 continue
             symbol = row["symbol"]
             if symbol in removed_set and pd.isna(row.get("end_date")):
-                row["end_date"] = end_date
+                row["end_date"] = removal_ends.get(symbol, end_date)
                 row["reason_removed"] = "detected:absent_from_live_universe"
                 row["last_seen_utc"] = now
-                log.info("universe removal: %s closed with end_date=%s", symbol, end_date)
+                log.info("universe removal: %s closed with end_date=%s", symbol, row["end_date"])
             elif symbol in live_symbols and pd.isna(row.get("end_date")):
                 row["last_seen_utc"] = now
                 constituent = live_by_symbol[symbol]
@@ -678,6 +698,38 @@ def _normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
 # "date added" may fall and still be believed. Wikipedia's table often updates a
 # few days after the effective date -- Vylor's addition showed up a week late.
 MAX_BACKDATE_DAYS = 14
+
+
+def _last_session(row: dict, end_date: date) -> date:
+    """When a removed symbol actually left: its last bar, if prices stopped first.
+
+    The default end is the last observation that listed it, and Wikipedia
+    trails the index by days. Skydance closed on Warner Bros. Discovery on
+    2026-10-06 and WBD's last session was 10/5, but the page kept it until 10/8
+    -- two days as a member with no price, beside its replacement. A listing
+    cannot be in the index after it stops trading, so a last bar inside that
+    window wins. Only within MAX_BACKDATE_DAYS: a bar that old points at a gap
+    in collection, not at the listing's end. A symbol still trading (Corteva,
+    dropped after its spin-off) has a last bar past the end and keeps it.
+    """
+    last = row.get("last_data_date")
+    if last is None or pd.isna(last):
+        return end_date
+    last = _as_date(last)
+    start = row.get("start_date")
+    if start is not None and not pd.isna(start) and last < _as_date(start):
+        return end_date
+    if end_date - timedelta(days=MAX_BACKDATE_DAYS) <= last < end_date:
+        return last
+    return end_date
+
+
+def _cik_key(cik) -> str | None:
+    """CIKs compare as numbers; Wikipedia and the seed disagree on zero padding."""
+    if cik is None or (not isinstance(cik, str) and pd.isna(cik)):
+        return None
+    key = str(cik).strip().lstrip("0")
+    return key or None
 
 
 def _best_start_date(

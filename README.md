@@ -432,6 +432,44 @@ range instead of the five-day lookback window. Three constraints keep it honest:
 Symbols backfilled this way are listed in the run summary under
 `backfilled_newcomers`.
 
+### Splits recorded after the fact rescale Yahoo's history, not ours
+
+`close` is split-adjusted only as of the day a row is written. Corteva spun off
+Vylor on 2026-10-01, and Yahoo recorded it some days later as a **6.665 split**,
+rescaling its own history: CTVA's 9/30 close became 11.65. The lake had stored
+77.65 the week before and nothing ever revisited it, so the stored series fell
+**84% in one session** where nothing of the sort happened -- in `close`,
+`adj_close` and `adjusted_ohlcv` alike, since all three start from `close`.
+
+The daily OHLCV stage now downloads 35 days (`rescale_check_days`) and writes
+only the usual five; the rest is compared with what is stored. A symbol whose
+older bars all disagree by **one constant ratio** -- 0.150038 for each of CTVA's
+fourteen -- gets its full history fetched again. The constant ratio is the
+point: Yahoo serves PSKY as an alias of SKYD and yfinance's repair pass nudges
+those bars by 0.7% to 7.6%, which is noise, not a rescale. Above `max_rescaled`
+(25) in one night it warns instead of rewriting. Refetched symbols are listed
+under `rescaled_history`.
+
+The same comparison catches a worse bar replacing a good one. After a listing
+ends, Yahoo can serve a broken copy of its last session: Warner Bros.
+Discovery's final day traded **435M shares** (Tiingo) and came back three days
+later with a volume of 40 and an invented open, which the lookback wrote over
+the real bar. A refreshed bar whose volume has collapsed below 1% of the stored
+one is now refused (`kept_stored_bars`). And the flat, zero-volume bars Yahoo
+pads onto ended listings are dropped -- Starwood had 122 of them, six months of
+a stock that no longer existed.
+
+### Removals and ticker changes are dated by the last session
+
+Wikipedia trails the index by days. Skydance closed on Warner Bros. Discovery on
+2026-10-06, but the page listed WBD until the 8th, so ending it at the last
+observation kept it a member for two sessions with no price, beside Twilio, its
+replacement. A removed symbol now ends on its last bar when prices stopped
+inside that window (and within `MAX_BACKDATE_DAYS` -- an older last bar means a
+collection gap, not a delisting). A ticker change is recognized by CIK: the new
+symbol starts the day after the old one ends, so the company is never missing
+and never counted twice.
+
 ### Volatility
 
 The `volatility` stage collects three things the lake had no source for. FRED's

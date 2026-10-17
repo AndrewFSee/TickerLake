@@ -187,7 +187,11 @@ def test_a_delisted_symbol_is_never_treated_as_a_newcomer(fetcher):
 
 
 def test_newcomers_are_fetched_over_the_full_range(fetcher, monkeypatch):
-    """The whole point: NEW gets 2010, OLD gets the five-day window."""
+    """The whole point: NEW gets 2010, OLD gets the recent window.
+
+    That window is the rescale check's 35 days -- downloaded, though only the
+    last five are written.
+    """
     calls: list[tuple[tuple[str, ...], date]] = []
 
     def fake_download(symbols, start, end):
@@ -202,7 +206,7 @@ def test_newcomers_are_fetched_over_the_full_range(fetcher, monkeypatch):
     assert result.ok, result.errors
 
     ranges = {syms: start for syms, start in calls}
-    assert ranges[("OLD",)] == RUN_DATE - pd.Timedelta(days=5).to_pytimedelta()
+    assert ranges[("OLD",)] == RUN_DATE - pd.Timedelta(days=35).to_pytimedelta()
     assert ranges[("NEW",)] == date(2010, 1, 1), "full history, not the lookback"
     assert result.details["backfilled_newcomers"] == ["NEW"]
 
