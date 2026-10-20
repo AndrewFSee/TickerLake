@@ -283,6 +283,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
             return window, []
         from tickerlake.storage.query import LakeQuery
 
+        window = self._check_dividends(window, result)
         symbols = sorted(window["symbol"].unique())
         placeholders = ",".join("?" * len(symbols))
         try:
@@ -352,6 +353,80 @@ class YFinanceOHLCVFetcher(BaseFetcher):
             (window["date"].map(as_date) >= write_from) | window["symbol"].isin(rescaled)
         )
         return window[keep], rescaled
+
+    def _check_dividends(self, window: pd.DataFrame, result: FetchResult) -> pd.DataFrame:
+        """Undo a dividend Yahoo has served at a hundred times its size.
+
+        EMCOR paid $0.40 on 2026-10-15. The 10/19 download said $40.00 -- an
+        hour later Yahoo, yfinance in every mode and Tiingo all said 0.40 -- and
+        Yahoo's Adj Close in the same response was built on the $40. The nightly
+        repair then trusted the event, as it trusts every stored event, and
+        lowered sixteen years of EME by 5.6%; since it only ever lowers, it
+        could not take that back either. So the check happens before the write.
+
+        A hundredfold is the cents-for-dollars slip, and it is exact, which a
+        genuine special dividend almost never is: the reference is the median of
+        the symbol's last four stored dividends, and the ratio must be 100 to
+        within 1%. That margin is deliberately tight: Baker Hughes' real $17.50
+        special in 2017 sits 103x its prior $0.17. The dividend is divided back
+        down, and the window's earlier adj_close values have the vendor's factor
+        swapped for the right one.
+        """
+        paid = window[window["dividends"].fillna(0) > 0]
+        if paid.empty:
+            return window
+        from tickerlake.storage.query import LakeQuery
+
+        symbols = sorted(paid["symbol"].unique())
+        since = min(window["date"])
+        try:
+            with LakeQuery(self.paths.root) as q:
+                history = q.sql(
+                    "SELECT symbol, date, dividends FROM ohlcv "
+                    f"WHERE symbol IN ({','.join('?' * len(symbols))}) "
+                    "AND dividends > 0 AND date < ? AND date >= ?",
+                    [*symbols, since, since - timedelta(days=730)],
+                )
+        except Exception as exc:
+            self.log.debug("could not read stored dividends: %s", exc)
+            return window
+        if history.empty:
+            return window
+
+        typical = (
+            history.sort_values("date")
+            .groupby("symbol")["dividends"]
+            .apply(lambda s: float(s.tail(4).median()))
+        )
+        window = window.copy()
+        fixed: list[str] = []
+        for idx, row in paid.iterrows():
+            ref = typical.get(row["symbol"])
+            if not ref or abs(row["dividends"] / ref / 100 - 1) > 0.01:
+                continue
+            bad, good = float(row["dividends"]), float(row["dividends"]) / 100
+            earlier = window[(window["symbol"] == row["symbol"]) & (window["date"] < row["date"])]
+            if not earlier.empty:
+                prev_close = float(earlier.sort_values("date")["close"].iloc[-1])
+                if prev_close > bad:
+                    swap = (1 - good / prev_close) / (1 - bad / prev_close)
+                    window.loc[earlier.index, "adj_close"] *= swap
+            window.at[idx, "dividends"] = good
+            fixed.append(f"{row['symbol']} {row['date']}: {bad:g} -> {good:g}")
+            self.log.warning(
+                "%s %s: dividend %s is 100x the usual %s; stored as %s",
+                row["symbol"],
+                row["date"],
+                bad,
+                ref,
+                good,
+            )
+        if fixed:
+            result.add_warning(
+                f"corrected {len(fixed)} hundredfold dividend(s): {'; '.join(fixed)}"
+            )
+            result.details["dividends_corrected"] = fixed
+        return window
 
     def _refetch_history(
         self,

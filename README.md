@@ -459,6 +459,15 @@ one is now refused (`kept_stored_bars`). And the flat, zero-volume bars Yahoo
 pads onto ended listings are dropped -- Starwood had 122 of them, six months of
 a stock that no longer existed.
 
+Dividends get the same scrutiny, because the nightly adjustment repair trusts
+every stored event and can only ever *lower* a row. On 2026-10-19 Yahoo served
+EMCOR's $0.40 quarterly as **$40.00** -- an hour later it, yfinance and Tiingo
+all said 0.40 -- and the repair lowered sixteen years of EME by 5.6%. A dividend
+exactly 100x (to within 1%) the median of the symbol's last four is now divided
+back down before it is written, and the adj_close Yahoo built on it is
+re-factored (`dividends_corrected`). The margin is tight on purpose: Baker
+Hughes' genuine $17.50 special in 2017 was 103x its prior dividend.
+
 ### Removals and ticker changes are dated by the last session
 
 Wikipedia trails the index by days. Skydance closed on Warner Bros. Discovery on
