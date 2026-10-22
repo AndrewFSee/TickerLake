@@ -53,11 +53,11 @@ class FredFetcher(BaseFetcher):
                     frame = self._observations(client, series_id, api_key, start, meta)
                 except HttpError as exc:
                     result.items_failed += 1
-                    result.add_warning(f"{series_id}: {exc}")
+                    result.add_warning(f"{series_id}: {_first_line(exc)}")
                     continue
                 except Exception as exc:
                     result.items_failed += 1
-                    result.add_warning(f"{series_id}: {type(exc).__name__}: {exc}")
+                    result.add_warning(f"{series_id}: {type(exc).__name__}: {_first_line(exc)}")
                     continue
 
                 if frame.empty:
@@ -75,6 +75,16 @@ class FredFetcher(BaseFetcher):
                 self.log.debug("%s: %d observations", series_id, len(frame))
         finally:
             client.close()
+
+        # One series failing is FRED being FRED; every series failing is FRED
+        # being down. On 2026-10-21 all 31 came back as a "Site Maintenance"
+        # page and the stage still reported OK, so the run looked clean. The
+        # stored history is untouched either way -- a failed series is never
+        # written -- but an outage should show up as a failed stage.
+        if result.items_failed and not result.items_succeeded:
+            result.add_error(
+                f"all {result.items_failed} FRED series failed; first: {result.warnings[0]}"
+            )
 
         result.details["series_fetched"] = result.items_succeeded
 
@@ -122,3 +132,9 @@ class FredFetcher(BaseFetcher):
         df["source"] = SOURCE
         df["ingested_at"] = datetime.now(UTC)
         return df
+
+
+def _first_line(exc: BaseException) -> str:
+    """An outage answers with a whole HTML page; the first line says enough."""
+    text = str(exc).strip()
+    return text.splitlines()[0][:200] if text else type(exc).__name__
