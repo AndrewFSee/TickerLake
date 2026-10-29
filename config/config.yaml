@@ -447,10 +447,12 @@ tiingo:
   #
   # The free tier caps unique symbols per MONTH, below our universe size, so
   # this samples a rotating slice rather than sweeping everything. A sample
-  # detects a systemic adjustment fault just as well.
+  # detects a systemic adjustment fault just as well. The cap is 500 unique
+  # symbols; 25 a run over a 23-weekday month is 575, which ran out on
+  # 2026-10-27. 20 a run peaks at 460 and leaves room for manual lookups.
   enabled: true
   requests_per_second: 3.0
-  symbols_per_run: 25
+  symbols_per_run: 20
   lookback_days: 10
 
 marketaux:

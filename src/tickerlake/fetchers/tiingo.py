@@ -60,7 +60,7 @@ class TiingoFetcher(BaseFetcher):
 
     def collect(self, run_date: date, result: FetchResult) -> None:
         token = self.config.secrets.tiingo_api_key
-        symbols = self._slice(run_date, int(self.cfg("symbols_per_run", 25)))
+        symbols = self._slice(run_date, int(self.cfg("symbols_per_run", 20)))
         if not symbols:
             result.add_warning("no symbols to cross-check")
             return
@@ -97,13 +97,29 @@ class TiingoFetcher(BaseFetcher):
                             "endDate": run_date.isoformat(),
                         },
                     )
-                    result.items_succeeded += 1
                 except Exception as exc:
                     result.items_failed += 1
                     self.log.debug("tiingo %s: %s", symbol, exc)
                     continue
 
-                for bar in payload or []:
+                # Refusals come back as HTTP 200 with {"detail": "..."} in place
+                # of the bar list. On 2026-10-27 that was the monthly symbol cap,
+                # and iterating the dict's keys as bars crashed the stage. The
+                # cap holds until the month turns, so asking for the rest of the
+                # slice only spends requests on more refusals.
+                if not isinstance(payload, list):
+                    result.items_failed += 1
+                    detail = str(payload.get("detail") if isinstance(payload, dict) else payload)
+                    if _over_quota(detail):
+                        result.add_warning(
+                            f"Tiingo monthly symbol cap reached at {symbol}: {detail[:120]}"
+                        )
+                        break
+                    self.log.debug("tiingo %s: %s", symbol, detail[:200])
+                    continue
+                result.items_succeeded += 1
+
+                for bar in payload:
                     day = as_date(str(bar.get("date"))[:10])
                     theirs_close = _as_float(bar.get("close"))
                     theirs_adj = _as_float(bar.get("adjClose"))
@@ -268,3 +284,9 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if pd.notna(out) else None
+
+
+def _over_quota(detail: str) -> bool:
+    """Tiingo's wording for the free tier's monthly unique-symbol cap."""
+    text = detail.lower()
+    return "symbol look up" in text or "run over" in text
