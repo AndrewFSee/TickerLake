@@ -44,7 +44,10 @@ def setup_logging(
 
     log_dir = data_root / "_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    stamp = run_id or datetime.now(UTC).strftime("%Y%m%d")
+    # Local date, not UTC: the nightly repair-adjustments step starts after
+    # 7 PM, which is past midnight UTC once clocks fall back to EST, and its
+    # output was landing in the next day's file.
+    stamp = run_id or datetime.now().strftime("%Y%m%d")
     log_path = log_dir / f"tickerlake_{stamp}.log"
 
     if _CONFIGURED:
