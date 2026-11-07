@@ -496,6 +496,56 @@ VIX_FUTURES_SCHEMA = pa.schema(
     ]
 )
 
+# One row per (symbol, snapshot date, fiscal period) from Yahoo's earningsTrend.
+# Yahoo only ever serves the current consensus, with its own 7/30/60/90-day-ago
+# values; the snapshots are what turn that into a revision history, and there is
+# no way to backfill one.
+ANALYST_ESTIMATES_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("period", pa.string(), nullable=False),  # 0q | +1q | 0y | +1y
+        pa.field("period_end", pa.date32()),
+        pa.field("eps_avg", pa.float64()),
+        pa.field("eps_low", pa.float64()),
+        pa.field("eps_high", pa.float64()),
+        pa.field("eps_year_ago", pa.float64()),
+        pa.field("growth", pa.float64()),
+        pa.field("analysts", pa.int32()),
+        pa.field("eps_trend_current", pa.float64()),
+        pa.field("eps_trend_7d", pa.float64()),
+        pa.field("eps_trend_30d", pa.float64()),
+        pa.field("eps_trend_60d", pa.float64()),
+        pa.field("eps_trend_90d", pa.float64()),
+        pa.field("up_7d", pa.int32()),
+        pa.field("up_30d", pa.int32()),
+        pa.field("down_7d", pa.int32()),
+        pa.field("down_30d", pa.int32()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+# Broker rating changes from Yahoo's upgradeDowngradeHistory, which unlike the
+# estimates does carry history (back to about 2012). `graded_at` is when Yahoo
+# stamped the change, in UTC: compare it with the session to know which close
+# could first have reacted.
+ANALYST_RATINGS_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("graded_at", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("firm", pa.string(), nullable=False),
+        pa.field("to_grade", pa.string()),
+        pa.field("from_grade", pa.string()),
+        pa.field("action", pa.string()),  # up | down | init | main | reit
+        pa.field("price_target_action", pa.string()),
+        pa.field("price_target", pa.float64()),
+        pa.field("prior_price_target", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
 
 SCHEMAS: dict[str, pa.Schema] = {
     P.OHLCV: OHLCV_SCHEMA,
@@ -506,6 +556,8 @@ SCHEMAS: dict[str, pa.Schema] = {
     P.OPTIONS_FLOW: OPTIONS_FLOW_SCHEMA,
     P.SHORT_VOLUME: SHORT_VOLUME_SCHEMA,
     P.EARNINGS: EARNINGS_SCHEMA,
+    P.ANALYST_ESTIMATES: ANALYST_ESTIMATES_SCHEMA,
+    P.ANALYST_RATINGS: ANALYST_RATINGS_SCHEMA,
     P.MEMBERSHIP: MEMBERSHIP_SCHEMA,
     P.UNIVERSE_HISTORY: UNIVERSE_HISTORY_SCHEMA,
     P.FILINGS_TEXT: FILINGS_TEXT_SCHEMA,
@@ -628,6 +680,16 @@ RULES: dict[str, ValidationRule] = {
         min_rows=0,
         non_null=("symbol", "record_type", "period"),
         unique_on=("symbol", "record_type", "period"),
+    ),
+    P.ANALYST_ESTIMATES: ValidationRule(
+        min_rows=0,
+        non_null=("symbol", "snapshot_date", "period"),
+        unique_on=("symbol", "snapshot_date", "period"),
+    ),
+    P.ANALYST_RATINGS: ValidationRule(
+        min_rows=0,
+        non_null=("symbol", "graded_at", "firm"),
+        unique_on=("symbol", "graded_at", "firm"),
     ),
     P.UNIVERSE_HISTORY: ValidationRule(
         min_rows=1,

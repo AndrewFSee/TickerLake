@@ -525,6 +525,20 @@ earnings:
   surprise_symbols_per_run: 60
   recommendation_symbols_per_run: 60
 
+analyst:
+  # Yahoo analyst data via yfinance; no key needed.
+  # Estimates: a daily snapshot of the EPS consensus for every S&P 500 member.
+  # Yahoo keeps no history of it, so each day not snapshotted is lost for good.
+  # Ratings: broker upgrades/downgrades, history back to ~2012. A rotating slice
+  # keeps them current; `tickerlake backfill analyst` pulls every symbol that was
+  # ever a member, delisted names included.
+  enabled: true
+  throttle_seconds: 0.5
+  fetch_estimates: true
+  fetch_ratings: true
+  rating_symbols_per_run: 100
+  write_every: 100
+
 options_analytics:
   # Derived: solves implied volatility and Greeks from the stored chains using
   # the FRED curve for discounting. A transform, not a fetch - safe to re-run
@@ -538,6 +552,8 @@ pipeline:
   stages:
     - universe
     - ohlcv
+    # analyst: early so the hub's 18:15 refresh publishes today's estimate snapshot
+    - analyst
     - intraday
     - volatility
     - options
@@ -564,6 +580,7 @@ pipeline:
     options_analytics: 60
     finra: 20
     earnings: 30
+    analyst: 45
     factors: 15
     yield_curve: 15
     cot: 20

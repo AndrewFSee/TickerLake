@@ -40,6 +40,7 @@ from tickerlake.fetchers.reference import (
 from tickerlake.fetchers.sec_edgar import SECEdgarFetcher
 from tickerlake.fetchers.tiingo import TiingoFetcher
 from tickerlake.fetchers.volatility import VolatilityFetcher
+from tickerlake.fetchers.yf_analyst import YFinanceAnalystFetcher
 from tickerlake.fetchers.yf_intraday import YFinanceIntradayFetcher
 from tickerlake.fetchers.yf_ohlcv import YFinanceOHLCVFetcher
 from tickerlake.fetchers.yf_options import YFinanceOptionsFetcher
@@ -61,6 +62,7 @@ FETCHERS = {
     "finnhub": FinnhubFetcher,
     "finra": FinraShortVolumeFetcher,
     "earnings": EarningsFetcher,
+    "analyst": YFinanceAnalystFetcher,
     "insider": InsiderFetcher,
     "announcements": AnnouncementFetcher,
     "factors": FamaFrenchFetcher,

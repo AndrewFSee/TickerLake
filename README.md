@@ -206,6 +206,52 @@ headline financials:
 `earnings` adds estimate-vs-actual surprises back to 2000, a forward calendar,
 and analyst recommendations.
 
+### Analyst estimates and rating changes (Yahoo)
+
+The `analyst` stage writes two datasets from Yahoo, via yfinance, with no key.
+They have opposite histories:
+
+- **`analyst_estimates`** is a daily snapshot of every member's EPS consensus
+  for this and next quarter and fiscal year. Each row has the low and high
+  estimates, the analyst count, the estimate 7, 30, 60 and 90 days ago, and
+  the number of revisions up and down. Yahoo serves only the current
+  consensus, so this dataset *is* the revision history, and a day not
+  snapshotted can't be recovered.
+- **`analyst_ratings`** holds broker upgrades, downgrades, initiations and
+  price-target changes, back to about 2012. Yahoo returns the whole history
+  on every request:
+  - A rotating 100-symbol slice keeps it current.
+  - `tickerlake backfill analyst` loads it once for every symbol that was ever
+    a member.
+  - Yahoo still serves about three quarters of the removed names (641 of 854
+    since 2010), so delisted names are only partly covered.
+
+Yahoo quirks:
+
+- A missing price target arrives as `0`. It is stored as null.
+- Yahoo's fiscal-year `period_end` can repeat across `0y` and `+1y`.
+- The EPS-trend columns (`eps_trend_*`) are consistent with each other.
+  `eps_avg` can differ from `eps_trend_current` for the same period.
+
+`scripts/backtest_analyst_ratings.py` asks whether rating changes carried an
+edge. It uses point-in-time membership and enters at the first open after each
+timestamp, with beta-adjusted returns, event-study t-statistics clustered by
+month, and calendar-time portfolios.
+
+Measured 2026-11-07 (154k events, 2012-2026):
+
+- **The announcement move.** Upgrades move +1.2% and downgrades −1.7% before
+  the first open you could trade at.
+- **After that, almost nothing.** Day-one drift is +0.05% and −0.09%.
+- **Upgrades minus downgrades,** held 21 sessions: +1.4%/yr (t 1.1). It was
+  negative in 2012-2018 and loses money after 10 bps per trade.
+- **Price-target raises minus cuts** is the one statistically clear result:
+  +2.0%/yr over 21 sessions (t 2.7). It comes entirely from 2019-2026 and is
+  also negative after costs.
+
+`scripts/publish_to_hub.py` publishes sector-level revisions and rating actions
+into the market-compass dashboard hub.
+
 **The lake is survivorship-bias-free by construction; fundamentals are where
 *lookahead* bias gets in instead.** Apple's FY2025 period ended 2025-09-27 but
 was not public until the 10-K was filed on 2025-10-31. Anything keyed on
@@ -608,6 +654,8 @@ Benchmarked on this machine against the live APIs:
 | Options analytics | 14,201 contracts -> IV + Greeks | 2.6 s | 5,441 contracts/sec |
 | FINRA short volume | 2 days, 632 symbols each | 2.4 s | 1,263 rows |
 | Earnings (Finnhub) | calendar + 60 symbols | 2.1 min | 641 rows |
+| Analyst (Yahoo) | 503 estimate snapshots + 100 rating histories | 5.1 min | ~2,000 + ~30k rows |
+| Analyst backfill | 854 symbols ever in the S&P 500 | ~15 min | 202k rating changes, 641 symbols |
 | GDELT (bulk feed) | 16 GKG files | 26 s | 3,947 articles, 0 failures |
 | Intraday 1m bars | 6 symbols x 3 sessions | 2.0 s | 7,020 bars (390/symbol/session) |
 
@@ -798,7 +846,7 @@ contracts (values of 0.00001 and 9.45 both appear in real output). Filter on
 | `init` | Seed the point-in-time membership table. Run first. |
 | `run` | Full daily pipeline. `--stages`, `--limit`, `--symbols`, `--date`. |
 | `options` | Options snapshot only. `--limit 10` to smoke-test. |
-| `backfill ohlcv\|filings` | One-time history load. |
+| `backfill ohlcv\|filings\|analyst` | One-time history load (analyst: rating history for every past member). |
 | `status` | Dataset sizes, membership stats, delisting flags, last run. |
 | `query` | SQL against the lake. `--output` to write CSV/Parquet. |
 | `compact` | Merge small files. `--force` ignores the age window. |

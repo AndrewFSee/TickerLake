@@ -52,6 +52,8 @@ OPTIONS_GREEKS = "options_greeks"
 OPTIONS_FLOW = "options_flow"
 SHORT_VOLUME = "short_volume"
 EARNINGS = "earnings"
+ANALYST_ESTIMATES = "analyst_estimates"
+ANALYST_RATINGS = "analyst_ratings"
 MEMBERSHIP = "membership"
 UNIVERSE_HISTORY = "universe_history"
 QUALITY = "quality"
@@ -66,6 +68,8 @@ DATASETS = [
     OPTIONS_FLOW,
     SHORT_VOLUME,
     EARNINGS,
+    ANALYST_ESTIMATES,
+    ANALYST_RATINGS,
     FILINGS_TEXT,
     FILINGS_FACTS,
     MACRO_SERIES,
@@ -186,6 +190,14 @@ class DatasetPaths:
         d = self.root / EARNINGS
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{safe_symbol(kind).lower()}.parquet"
+
+    # -------------------------------------------------------------- analyst
+
+    def analyst_file(self, dataset: str) -> Path:
+        """One file per analyst dataset: estimate snapshots, rating changes."""
+        d = self.root / dataset
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{dataset}.parquet"
 
     # ----------------------------------------------------------- membership
 

@@ -155,6 +155,8 @@ class ParquetWriter:
             P.OPTIONS_FLOW: ["symbol"],
             P.SHORT_VOLUME: ["symbol", "date"],
             P.EARNINGS: ["symbol", "period"],
+            P.ANALYST_ESTIMATES: ["symbol", "snapshot_date", "period"],
+            P.ANALYST_RATINGS: ["symbol", "graded_at"],
             P.MEMBERSHIP: ["symbol", "start_date"],
             P.UNIVERSE_HISTORY: ["observed_date", "symbol"],
             P.FILINGS_TEXT: ["filing_date", "cik"],
