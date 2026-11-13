@@ -292,6 +292,22 @@ closed-end funds, REITs and MLPs look like they are falling.
 `scripts/publish_events_to_hub.py` matches markets to release dates and publishes the hub's
 Events & Odds page.
 
+### Value/growth scores and buybacks (from filings)
+
+- **`tickerlake.analytics.style`** scores every member on value (book, trailing earnings,
+  sales and dividends relative to price) and growth (3-year EPS and sales-per-share trend,
+  capex / assets, return on assets) from `filings_facts`. A quarter counts only once every
+  input it uses has been filed: about a fifth of quarters had an input first filed later, as
+  a comparative in the next report. Backtest over 167 month-ends since 2012: no forecasting
+  power at stock or sector level (|t| ≤ 1.5). `scripts/publish_style_to_hub.py` feeds the
+  hub's Value & Growth page.
+- **`tickerlake.analytics.buybacks`** turns year-to-date repurchase cash flows into quarters,
+  tracks the remaining authorization, and estimates each company's blackout window: it
+  shuts 14 days before the fiscal quarter's end and reopens 2 business days after the
+  earnings release. `scripts/backfill_earnings_releases.py` (one-off, about 4 minutes) dates
+  every quarter's release from the company's Item 2.02 8-K since 2010: about 41,600 quarters
+  with 97% matched. `scripts/publish_buybacks_to_hub.py` feeds the hub's Buybacks page.
+
 **The lake is survivorship-bias-free by construction; fundamentals are where
 *lookahead* bias gets in instead.** Apple's FY2025 period ended 2025-09-27 but
 was not public until the 10-K was filed on 2025-10-31. Anything keyed on

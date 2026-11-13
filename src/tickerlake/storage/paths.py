@@ -58,6 +58,8 @@ OPTIONS_GREEKS = "options_greeks"
 OPTIONS_FLOW = "options_flow"
 SHORT_VOLUME = "short_volume"
 EARNINGS = "earnings"
+# Release date of every fiscal quarter since 2008 (scripts/backfill_earnings_releases.py)
+EARNINGS_RELEASES = "earnings_releases"
 ANALYST_ESTIMATES = "analyst_estimates"
 ANALYST_RATINGS = "analyst_ratings"
 MEMBERSHIP = "membership"
