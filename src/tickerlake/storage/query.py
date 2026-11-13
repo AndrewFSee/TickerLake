@@ -309,6 +309,7 @@ class LakeQuery:
         start: date | str | None = None,
         end: date | str | None = None,
         as_of: date | str | None = None,
+        dataset: str = P.OHLCV,
     ) -> pd.DataFrame:
         """OHLCV with the dividend adjustment computed, not read off the file.
 
@@ -336,6 +337,8 @@ class LakeQuery:
         Returns the raw columns plus ``adj_factor`` and ``adj_open`` /
         ``adj_high`` / ``adj_low`` / ``adj_close``. Volume is not adjusted:
         ``close`` is already split-adjusted, so there is no split left to apply.
+        ``dataset`` picks the bars: the index universe (``ohlcv``) or the exchange-wide
+        listed universe (``ohlcv_listed``), which has the same schema.
         """
         start = _to_date(start) if start is not None else None
         end = _to_date(end) if end is not None else None
@@ -343,15 +346,15 @@ class LakeQuery:
 
         # The factor for a 2015 row depends on every dividend between then and
         # ``as_of``, so the scan has to reach forward past ``end``.
-        pattern = self._ohlcv_globs(start, as_of)
+        pattern = self._ohlcv_globs(start, as_of, dataset)
         if pattern is None:
-            return _empty_df(P.OHLCV)
+            return _empty_df(dataset)
 
         where, params = ["1=1"], []
         if symbols is not None:
             syms = [s.upper() for s in symbols]
             if not syms:
-                return _empty_df(P.OHLCV)
+                return _empty_df(dataset)
             where.append(f"symbol IN ({','.join('?' * len(syms))})")
             params.extend(syms)
         if start is not None:
@@ -369,7 +372,7 @@ class LakeQuery:
 
         cte = self._ADJ_CTE.format(
             pattern=pattern,
-            projection=self._projection(P.OHLCV),
+            projection=self._projection(dataset),
             where=" AND ".join(where),
         )
         return self.sql(
@@ -543,9 +546,11 @@ class LakeQuery:
             [index_name, start, end],
         )
 
-    def _ohlcv_globs(self, start: date | str | None, end: date | str | None) -> str | None:
+    def _ohlcv_globs(
+        self, start: date | str | None, end: date | str | None, dataset: str = P.OHLCV
+    ) -> str | None:
         """Explicit per-month globs so DuckDB opens only the relevant partitions."""
-        base = self.root / P.OHLCV
+        base = self.root / dataset
         if not base.exists():
             return None
         if start is None or end is None:

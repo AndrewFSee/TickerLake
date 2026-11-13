@@ -539,6 +539,94 @@ analyst:
   rating_symbols_per_run: 100
   write_every: 100
 
+listings:
+  # Nasdaq Trader's symbol directories: every listing on Nasdaq, NYSE, NYSE American,
+  # NYSE Arca, Cboe BZX and IEX, classified as common / preferred / warrant / unit /
+  # right / note / etf / test. They only ever describe today, so the daily snapshot is
+  # the only point-in-time record of what was listed. Feeds listed_ohlcv.
+  enabled: true
+
+listed_ohlcv:
+  # Daily bars for every listed common stock on the chosen exchanges, for exchange-wide
+  # breadth (the hub's NYSE breadth: % advancing, % above 20/50/200-day averages).
+  # Own dataset, never the membership table, so no other stage fetches these names.
+  # History before the first listings snapshot covers only names still listed then
+  # (survivorship); from that day on the universe is point-in-time.
+  enabled: true
+  exchanges: [N]          # N = NYSE. A = NYSE American, Q = Nasdaq widen it.
+  categories: [common]
+  start_date: "2016-01-01"
+  interval: "1d"
+  batch_size: 50
+  throttle_seconds: 1.0
+  auto_adjust: false
+  repair: true
+  lookback_days: 5
+  rescale_check_days: 35
+  rescale_tolerance: 0.02
+  rescale_min_bars: 3
+  max_rescaled: 50
+  include_actions: true
+  backfill_batch_size: 25
+  backfill_throttle_seconds: 2.0
+  recent_history_days: 30
+  # New listings per night (IPOs, spin-offs, uplistings) are fetched in full.
+  max_newcomers: 60
+  # Yahoo posts most of these names' daily bars hours after the close; until then the
+  # session's bar is built from hourly bars (source yfinance_1h) and replaced next run.
+  provisional_from_hourly: true
+
+econ_calendar:
+  # Upcoming US releases. Dates from FRED's release calendar (needs FRED_API_KEY), except
+  # dates_from: kalshi, taken from when Kalshi's markets on the release close (FOMC meetings
+  # have no FRED calendar; ISM isn't a FRED release). Curated: FRED dates "FOMC Press Release"
+  # on every day, and lists hundreds of minor releases. time is New York time.
+  # kalshi / polymarket: the series and title patterns that trade on the number; the
+  # prediction_markets stage follows these, and the hub publisher matches them to dates.
+  enabled: true
+  horizon_days: 60
+  requests_per_second: 2.0
+  releases:
+    fomc:      {name: "FOMC rate decision", time: "14:00", importance: high, dates_from: kalshi,
+                kalshi: [KXFEDDECISION], polymarket: ["^Fed Decision in"]}
+    cpi:       {name: "CPI", fred: 10, time: "08:30", importance: high,
+                kalshi: [KXCPI, KXCPICORE], polymarket: ["Inflation US - Monthly", "^Core CPI MoM"]}
+    jobs:      {name: "Jobs report (payrolls, unemployment)", fred: 50, time: "08:30", importance: high,
+                kalshi: [KXPAYROLLS, KXU3], polymarket: ["jobs added in", "^US Unemployment"]}
+    gdp:       {name: "GDP", fred: 53, time: "08:30", importance: high, kalshi: [KXGDP], polymarket: ["^US GDP"]}
+    pce:       {name: "PCE inflation (personal income & outlays)", fred: 54, time: "08:30", importance: high,
+                kalshi: [KXPCECORE], polymarket: ["^Core PCE"]}
+    retail:    {name: "Retail sales", fred: 9, time: "08:30", importance: high, kalshi: [KXUSRETAIL]}
+    ppi:       {name: "PPI", fred: 46, time: "08:30", importance: medium, kalshi: [KXUSPPI]}
+    claims:    {name: "Initial jobless claims", fred: 180, time: "08:30", importance: medium,
+                kalshi: [KXJOBLESSCLAIMS]}
+    durables:  {name: "Durable goods / factory orders", fred: 95, time: "08:30", importance: medium}
+    housing:   {name: "Housing starts & permits", fred: 27, time: "08:30", importance: medium}
+    indprod:   {name: "Industrial production", fred: 13, time: "09:15", importance: medium}
+    ism:       {name: "ISM manufacturing PMI", time: "10:00", importance: medium, dates_from: kalshi,
+                kalshi: [KXISMPMI]}
+    sentiment: {name: "UMich consumer sentiment", fred: 91, time: "10:00", importance: medium}
+    jolts:     {name: "JOLTS job openings", fred: 192, time: "10:00", importance: medium}
+    newhome:   {name: "New home sales", fred: 97, time: "10:00", importance: low}
+    existing:  {name: "Existing home sales", fred: 291, time: "10:00", importance: low}
+
+prediction_markets:
+  # Daily snapshot of the Kalshi and Polymarket markets above, plus indices and stocks.
+  # Both APIs are public and keyless. Odds before a release exist only while the market is
+  # open, so these snapshots are the only record of how they moved.
+  enabled: true
+  requests_per_second: 3.0
+  kalshi:
+    # Besides the release series in econ_calendar.releases:
+    extra_series: [KXINX, KXNASDAQ100, KXINXPOS, KXFED]
+  polymarket:
+    tags: [fed-rates, economy, stocks]
+    # Events below this total $ volume are noise.
+    min_volume: 2000
+    max_events_per_tag: 500
+    # Other countries' data and non-market curiosities under the same tags.
+    exclude: "Canada|China|Japan|Euro|UK |United Kingdom|Brazil|Argentina|Mexico|India|Korea|Australia|Turkey|Germany|France|Italy|Spain|Russia|Reserve Bank|Bank of|ECB|divorce|affair|resign"
+
 options_analytics:
   # Derived: solves implied volatility and Greeks from the stored chains using
   # the FRED curve for discounting. A transform, not a fetch - safe to re-run
@@ -554,6 +642,12 @@ pipeline:
     - ohlcv
     # analyst: early so the hub's 18:15 refresh publishes today's estimate snapshot
     - analyst
+    # listings + listed_ohlcv: NYSE-wide breadth for the same refresh (~15 min)
+    - listings
+    - listed_ohlcv
+    # release calendar + Kalshi/Polymarket odds for the hub's Events & odds page (~1 min)
+    - econ_calendar
+    - prediction_markets
     - intraday
     - volatility
     - options
@@ -581,6 +675,10 @@ pipeline:
     finra: 20
     earnings: 30
     analyst: 45
+    listings: 5
+    listed_ohlcv: 45
+    econ_calendar: 5
+    prediction_markets: 15
     factors: 15
     yield_curve: 15
     cot: 20

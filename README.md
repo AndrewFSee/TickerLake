@@ -252,6 +252,46 @@ Measured 2026-11-07 (154k events, 2012-2026):
 `scripts/publish_to_hub.py` publishes sector-level revisions and rating actions
 into the market-compass dashboard hub.
 
+### Exchange listings and NYSE-wide bars (breadth)
+
+Exchange breadth needs every stock on the exchange, not the index. Two stages provide it
+without touching the membership table, which every other stage iterates:
+
+- **`listings`** snapshots Nasdaq Trader's symbol directories (every Nasdaq, NYSE, NYSE
+  American, Arca, Cboe and IEX listing, about 13,300) daily, classifying each as common,
+  preferred, warrant, unit, right, note, ETF or test issue. The directories describe only
+  today, so the snapshots are the point-in-time record of what was listed.
+- **`listed_ohlcv`** keeps daily bars for the configured exchanges and categories (default:
+  NYSE common stock, about 2,200 names) in its own dataset, `ohlcv_listed`, through the
+  same code as `ohlcv`. One-time `tickerlake backfill listed_ohlcv` loads 2016 on (5.1M
+  bars, 108 MB, 13 minutes). History before the first snapshot covers only names still
+  listed then.
+
+Yahoo posts most of these names' daily bars hours after the close (at 21:30 ET on
+2026-11-12, 11 of 40 sampled), while their hourly bars are current. So the evening run
+builds any missing session bar from hourly bars (`source = yfinance_1h`, the last trade
+before 16:00), and the next run's lookback replaces it with the official bar.
+
+`scripts/publish_breadth_to_hub.py` computes NYSE breadth for the hub on dividend-adjusted
+closes (`LakeQuery.adjusted_ohlcv(dataset="ohlcv_listed")`): raw closes make high-payout
+closed-end funds, REITs and MLPs look like they are falling.
+
+### Release calendar and prediction markets
+
+- **`econ_calendar`** snapshots upcoming US releases daily: FRED's release calendar for a
+  curated list (FRED also dates "FOMC Press Release" on every day), plus FOMC meetings and
+  ISM from when Kalshi's markets on them close.
+- **`prediction_markets`** snapshots Kalshi's and Polymarket's public markets daily: the
+  series and title patterns mapped to each release in config, Fed decisions, S&P 500 and
+  Nasdaq-100 ranges, and Polymarket's single-stock ladders. Odds before a release exist
+  only while the market is open, so the snapshots are the only record of how they moved.
+- `tickerlake.analytics.prediction` reads a ladder of "above X" prices as a distribution
+  (made monotone first) and returns its implied median; named outcomes are normalised
+  only when the venue marks them mutually exclusive.
+
+`scripts/publish_events_to_hub.py` matches markets to release dates and publishes the hub's
+Events & Odds page.
+
 **The lake is survivorship-bias-free by construction; fundamentals are where
 *lookahead* bias gets in instead.** Apple's FY2025 period ended 2025-09-27 but
 was not public until the 10-K was filed on 2025-10-31. Anything keyed on
@@ -846,7 +886,7 @@ contracts (values of 0.00001 and 9.45 both appear in real output). Filter on
 | `init` | Seed the point-in-time membership table. Run first. |
 | `run` | Full daily pipeline. `--stages`, `--limit`, `--symbols`, `--date`. |
 | `options` | Options snapshot only. `--limit 10` to smoke-test. |
-| `backfill ohlcv\|filings\|analyst` | One-time history load (analyst: rating history for every past member). |
+| `backfill ohlcv\|listed_ohlcv\|filings\|analyst` | One-time history load (analyst: rating history for every past member; listed_ohlcv: every NYSE common stock since 2016). |
 | `status` | Dataset sizes, membership stats, delisting flags, last run. |
 | `query` | SQL against the lake. `--output` to write CSV/Parquet. |
 | `compact` | Merge small files. `--force` ignores the age window. |
@@ -1328,6 +1368,9 @@ than a single venue's.
 | **Ken French** | Fama-French daily factors (FF5 + momentum, 1990-) | none |
 | **US Treasury** | Official daily par yield curve, all 14 tenors | none |
 | **CFTC** | Commitments of Traders, weekly positioning by category | none |
+| **Nasdaq Trader** | Daily symbol directories: every US exchange listing | none |
+| **Kalshi** | Prediction markets on US releases, the Fed and indices (public API) | none |
+| **Polymarket** | Prediction markets on the Fed, US data and single stocks (public API) | none |
 | **Tiingo** | Independent check on *adjusted* prices and corporate actions | free |
 | **Marketaux** | Symbol-tagged news with per-entity sentiment | free |
 | **IEX DEEP** | L2 order book, on demand (`tickerlake l2`) | none |

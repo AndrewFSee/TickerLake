@@ -26,12 +26,15 @@ from tickerlake.config import Config
 from tickerlake.fetchers.announcements import AnnouncementFetcher
 from tickerlake.fetchers.base import FetchResult
 from tickerlake.fetchers.earnings import EarningsFetcher
+from tickerlake.fetchers.econ_calendar import EconCalendarFetcher
 from tickerlake.fetchers.finnhub import FinnhubFetcher
 from tickerlake.fetchers.finra import FinraShortVolumeFetcher
 from tickerlake.fetchers.fred import FredFetcher
 from tickerlake.fetchers.gdelt import GdeltFetcher
 from tickerlake.fetchers.insider import InsiderFetcher
+from tickerlake.fetchers.listings import ListingsFetcher
 from tickerlake.fetchers.marketaux import MarketauxFetcher
+from tickerlake.fetchers.prediction_markets import PredictionMarketsFetcher
 from tickerlake.fetchers.reference import (
     CftcCotFetcher,
     FamaFrenchFetcher,
@@ -42,6 +45,7 @@ from tickerlake.fetchers.tiingo import TiingoFetcher
 from tickerlake.fetchers.volatility import VolatilityFetcher
 from tickerlake.fetchers.yf_analyst import YFinanceAnalystFetcher
 from tickerlake.fetchers.yf_intraday import YFinanceIntradayFetcher
+from tickerlake.fetchers.yf_listed import ListedOHLCVFetcher
 from tickerlake.fetchers.yf_ohlcv import YFinanceOHLCVFetcher
 from tickerlake.fetchers.yf_options import YFinanceOptionsFetcher
 from tickerlake.storage import paths as P
@@ -54,6 +58,10 @@ log = logging.getLogger(__name__)
 
 FETCHERS = {
     "ohlcv": YFinanceOHLCVFetcher,
+    "listings": ListingsFetcher,
+    "listed_ohlcv": ListedOHLCVFetcher,
+    "econ_calendar": EconCalendarFetcher,
+    "prediction_markets": PredictionMarketsFetcher,
     "intraday": YFinanceIntradayFetcher,
     "options": YFinanceOptionsFetcher,
     "sec_edgar": SECEdgarFetcher,

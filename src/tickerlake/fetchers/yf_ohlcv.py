@@ -186,8 +186,8 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         # the same reason they have no future: the vendor will not serve it.
         # AGL Resources (GAS) left the index in 2016 with zero bars stored, and
         # without this it would be re-requested every night forever.
-        if self.tracker is not None and found:
-            current = set(self.tracker.current_members())
+        current = self._current_symbols()
+        if current is not None and found:
             skipped = [s for s in found if s not in current]
             if skipped:
                 self.log.debug(
@@ -237,7 +237,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         try:
             with LakeQuery(self.paths.root) as q:
                 stored = q.sql(
-                    "SELECT symbol, MIN(date) AS first_bar FROM ohlcv "
+                    f"SELECT symbol, MIN(date) AS first_bar FROM {self.dataset} "
                     f"WHERE symbol IN ({placeholders}) GROUP BY symbol",
                     list(symbols),
                 )
@@ -289,7 +289,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         try:
             with LakeQuery(self.paths.root) as q:
                 stored = q.sql(
-                    "SELECT symbol, date, close, volume FROM ohlcv "
+                    f"SELECT symbol, date, close, volume FROM {self.dataset} "
                     f"WHERE symbol IN ({placeholders}) AND date >= ?",
                     [*symbols, min(window["date"])],
                 )
@@ -382,7 +382,7 @@ class YFinanceOHLCVFetcher(BaseFetcher):
         try:
             with LakeQuery(self.paths.root) as q:
                 history = q.sql(
-                    "SELECT symbol, date, dividends FROM ohlcv "
+                    f"SELECT symbol, date, dividends FROM {self.dataset} "
                     f"WHERE symbol IN ({','.join('?' * len(symbols))}) "
                     "AND dividends > 0 AND date < ? AND date >= ?",
                     [*symbols, since, since - timedelta(days=730)],
@@ -529,6 +529,13 @@ class YFinanceOHLCVFetcher(BaseFetcher):
             return []
         return self.tracker.tracked_symbols(as_of=run_date)
 
+    def _current_symbols(self) -> set[str] | None:
+        """Symbols still live today, the only ones worth a newcomer backfill."""
+        return None if self.tracker is None else set(self.tracker.current_members())
+
+    def _month_file(self, year: int, month: int):
+        return self.paths.ohlcv_backfill_file(year, month)
+
     def _download(self, symbols: list[str], start: date, end: date) -> pd.DataFrame | None:
         """Download one batch and return it in long form."""
         yahoo = [to_yahoo_symbol(s) for s in symbols]
@@ -631,9 +638,9 @@ class YFinanceOHLCVFetcher(BaseFetcher):
 
         for (year, month), group in df.groupby(["_year", "_month"], sort=True):
             group = group.drop(columns=["_year", "_month"])
-            path = self.paths.ohlcv_backfill_file(int(year), int(month))
+            path = self._month_file(int(year), int(month))
 
-            write = self.writer.write(group, P.OHLCV, path, mode=mode)
+            write = self.writer.write(group, self.dataset, path, mode=mode)
             result.record_write(write)
             self.log.debug("%04d-%02d: %s", year, month, write)
 

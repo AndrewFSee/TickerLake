@@ -148,6 +148,10 @@ class ParquetWriter:
 
         return {
             P.OHLCV: ["symbol", "date"],
+            P.OHLCV_LISTED: ["symbol", "date"],
+            P.LISTINGS: ["snapshot_date", "symbol"],
+            P.ECON_CALENDAR: ["snapshot_date", "release_date", "release_key"],
+            P.PREDICTION_MARKETS: ["snapshot_date", "venue", "event_id", "market_id"],
             P.OPTIONS_CHAINS: ["symbol", "expiration", "option_type", "strike"],
             P.INTRADAY_BARS: ["symbol", "datetime"],
             P.BOOK_SNAPSHOTS: ["symbol", "datetime"],

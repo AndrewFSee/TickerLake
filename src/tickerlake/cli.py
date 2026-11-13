@@ -137,6 +137,12 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         fetcher = YFinanceOHLCVFetcher(
             config, paths, writer, tracker=tracker, symbols_override=_symbols(args), backfill=True
         )
+    elif args.dataset == "listed_ohlcv":
+        from tickerlake.fetchers.yf_listed import ListedOHLCVFetcher
+
+        fetcher = ListedOHLCVFetcher(
+            config, paths, writer, tracker=tracker, symbols_override=_symbols(args), backfill=True
+        )
     elif args.dataset == "analyst":
         from tickerlake.fetchers.yf_analyst import YFinanceAnalystFetcher
 
@@ -538,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_options)
 
     p = sub.add_parser("backfill", help="backfill history")
-    p.add_argument("dataset", choices=["ohlcv", "filings", "analyst"])
+    p.add_argument("dataset", choices=["ohlcv", "listed_ohlcv", "filings", "analyst"])
     p.add_argument("--date", help="end date (YYYY-MM-DD), default today")
     p.add_argument("--symbols", help="comma-separated symbols")
     p.set_defaults(func=cmd_backfill)

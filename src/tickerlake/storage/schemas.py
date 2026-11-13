@@ -546,9 +546,85 @@ ANALYST_RATINGS_SCHEMA = pa.schema(
     ]
 )
 
+# Daily snapshot of Nasdaq Trader's symbol directories (every NYSE, NYSE American,
+# Arca, Cboe, IEX and Nasdaq listing). The directories only describe today, so these
+# snapshots are the only point-in-time record of what was listed. `category` is our
+# classification of the security name (common, preferred, warrant, unit, right, note,
+# etf, test); ADRs, REITs, closed-end funds and partnerships count as common.
+LISTINGS_SCHEMA = pa.schema(
+    [
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("exchange", pa.string(), nullable=False),  # N A P Z V Q
+        pa.field("security_name", pa.string()),
+        pa.field("category", pa.string(), nullable=False),
+        pa.field("etf", pa.bool_()),
+        pa.field("test_issue", pa.bool_()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+# Upcoming US data releases as known on snapshot_date. Release dates come from FRED's
+# release calendar (a curated list: FRED also lists "FOMC Press Release" on every day),
+# FOMC meetings and releases FRED doesn't carry (ISM) from the dates of Kalshi's markets
+# on them. `release_key` is our name for the release, shared with prediction_markets.
+ECON_CALENDAR_SCHEMA = pa.schema(
+    [
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("release_key", pa.string(), nullable=False),
+        pa.field("release_date", pa.date32(), nullable=False),
+        pa.field("name", pa.string(), nullable=False),
+        pa.field("time_et", pa.string()),  # "08:30"
+        pa.field("importance", pa.string()),  # high | medium | low
+        pa.field("fred_release_id", pa.int32()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+# Daily snapshot of the prediction markets we follow: one row per tradable outcome.
+# Kalshi markets are binary contracts within an event (each strike of a ladder, or each
+# outcome of a Fed meeting); Polymarket's are the same shape (an event's markets).
+# `prob` is the bid/ask midpoint when the spread is sane, else the last trade.
+PREDICTION_MARKETS_SCHEMA = pa.schema(
+    [
+        pa.field("snapshot_date", pa.date32(), nullable=False),
+        pa.field("snapshot_at", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("venue", pa.string(), nullable=False),  # kalshi | polymarket
+        pa.field("series", pa.string()),
+        pa.field("event_id", pa.string(), nullable=False),
+        pa.field("event_title", pa.string()),
+        pa.field("market_id", pa.string(), nullable=False),
+        pa.field("outcome", pa.string()),
+        pa.field("strike_type", pa.string()),  # greater | less | between | touch_above | custom ...
+        # The event's outcomes are mutually exclusive (one resolves yes): Kalshi's
+        # mutually_exclusive, Polymarket's negRisk. Otherwise each is its own yes/no.
+        pa.field("exclusive", pa.bool_()),
+        pa.field("floor_strike", pa.float64()),
+        pa.field("cap_strike", pa.float64()),
+        pa.field("close_time", pa.timestamp("us", tz="UTC")),
+        pa.field("yes_bid", pa.float64()),
+        pa.field("yes_ask", pa.float64()),
+        pa.field("last_price", pa.float64()),
+        pa.field("prob", pa.float64()),
+        pa.field("volume", pa.float64()),
+        pa.field("volume_24h", pa.float64()),
+        pa.field("open_interest", pa.float64()),
+        pa.field("liquidity", pa.float64()),
+        pa.field("url", pa.string()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
 
 SCHEMAS: dict[str, pa.Schema] = {
+    P.ECON_CALENDAR: ECON_CALENDAR_SCHEMA,
+    P.PREDICTION_MARKETS: PREDICTION_MARKETS_SCHEMA,
     P.OHLCV: OHLCV_SCHEMA,
+    P.OHLCV_LISTED: OHLCV_SCHEMA,
+    P.LISTINGS: LISTINGS_SCHEMA,
     P.OPTIONS_CHAINS: OPTIONS_SCHEMA,
     P.INTRADAY_BARS: INTRADAY_BARS_SCHEMA,
     P.BOOK_SNAPSHOTS: BOOK_SNAPSHOTS_SCHEMA,
@@ -629,6 +705,29 @@ RULES: dict[str, ValidationRule] = {
         not_all_null=("close",),
         non_negative=("volume",),
         at_least=(("high", "low"), ("high", "close"), ("close", "low")),
+    ),
+    P.OHLCV_LISTED: ValidationRule(
+        min_rows=1,
+        non_null=("symbol", "date", "source", "ingested_at"),
+        unique_on=("symbol", "date"),
+        not_all_null=("close",),
+        non_negative=("volume",),
+        at_least=(("high", "low"), ("high", "close"), ("close", "low")),
+    ),
+    P.LISTINGS: ValidationRule(
+        min_rows=1,
+        non_null=("snapshot_date", "symbol", "exchange", "category"),
+        unique_on=("snapshot_date", "symbol"),
+    ),
+    P.ECON_CALENDAR: ValidationRule(
+        min_rows=0,
+        non_null=("snapshot_date", "release_key", "release_date", "name"),
+        unique_on=("snapshot_date", "release_key", "release_date"),
+    ),
+    P.PREDICTION_MARKETS: ValidationRule(
+        min_rows=0,
+        non_null=("snapshot_date", "venue", "event_id", "market_id"),
+        unique_on=("snapshot_date", "venue", "market_id"),
     ),
     P.OPTIONS_CHAINS: ValidationRule(
         min_rows=1,

@@ -37,6 +37,12 @@ from pathlib import Path
 
 # Dataset directory names, also used as DuckDB view names.
 OHLCV = "ohlcv"
+# Daily bars for every listed common stock on an exchange (breadth), outside the index
+# universe. Kept apart from OHLCV so no stage that iterates the membership table sees them.
+OHLCV_LISTED = "ohlcv_listed"
+LISTINGS = "listings"
+ECON_CALENDAR = "econ_calendar"
+PREDICTION_MARKETS = "prediction_markets"
 OPTIONS_CHAINS = "options_chains"
 FILINGS_TEXT = "filings_text"
 FILINGS_FACTS = "filings_facts"
@@ -61,6 +67,10 @@ VIX_FUTURES = "vix_futures"
 
 DATASETS = [
     OHLCV,
+    OHLCV_LISTED,
+    LISTINGS,
+    ECON_CALENDAR,
+    PREDICTION_MARKETS,
     OPTIONS_CHAINS,
     INTRADAY_BARS,
     BOOK_SNAPSHOTS,
@@ -129,6 +139,30 @@ class DatasetPaths:
     def ohlcv_backfill_file(self, year: int, month: int) -> Path:
         """Consolidated file written directly by the backfill (not a delta)."""
         part = self.ohlcv_partition(year, month)
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def listed_ohlcv_file(self, year: int, month: int) -> Path:
+        """Month file of the listed-universe bars, same layout as OHLCV."""
+        part = self.root / OHLCV_LISTED / f"year={year:04d}" / f"month={month:02d}"
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def listings_file(self, year: int) -> Path:
+        """One file per year of daily exchange-listing snapshots."""
+        part = self.root / LISTINGS / f"year={year:04d}"
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def econ_calendar_file(self, year: int) -> Path:
+        """Daily snapshots of the upcoming release calendar, one file per year."""
+        part = self.root / ECON_CALENDAR / f"year={year:04d}"
+        part.mkdir(parents=True, exist_ok=True)
+        return part / "data.parquet"
+
+    def prediction_markets_file(self, year: int, month: int) -> Path:
+        """Daily prediction-market snapshots, one file per month."""
+        part = self.root / PREDICTION_MARKETS / f"year={year:04d}" / f"month={month:02d}"
         part.mkdir(parents=True, exist_ok=True)
         return part / "data.parquet"
 
