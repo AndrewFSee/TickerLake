@@ -9,8 +9,8 @@ Prices are dividend-adjusted (``LakeQuery.adjusted_ohlcv``, rebuilt from the raw
 the stored dividends). The NYSE is full of high-payout closed-end funds, REITs and MLPs whose
 raw price falls by every distribution: on raw closes an 8% payer sits about 5% "below" its
 200-day average when its total return hasn't moved. Measured 2026-11-12, % above the
-20/50/200-day: 50.8 / 47.8 / 41.9 on raw closes, 51.8 / 50.1 / 46.2 adjusted; SimpleVisor's
-NYSE figures read 55 / 53 / 49 (S&P 500 members: 66.9 / 70.6 / 65.1).
+20/50/200-day: 50.8 / 47.8 / 41.9 on raw closes, 51.8 / 50.1 / 46.2 adjusted (S&P 500
+members: 66.9 / 70.6 / 65.1).
 
 Universe: NYSE common stock (ADRs, REITs, closed-end funds and partnerships included;
 preferreds, notes, warrants, units, rights and ETFs excluded), as classified by the
