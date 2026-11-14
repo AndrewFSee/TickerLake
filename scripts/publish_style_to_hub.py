@@ -16,6 +16,10 @@ Writes to ``<HUB_DATA_DIR>/style/``:
                      as a z-score, market cap, sector, name
 * ``stock_history``  value and growth per member per month-end
 * ``sectors``        cap-weighted value and growth per sector per month-end and latest date
+* ``gaps``           growth members vs value members (book / price split at 30 / 70%) per month-end and
+                     latest date: cap-weighted asset growth, book / price and return on equity of each
+                     group (``style.style_gaps``); the hub's growth_value job compares it with Ken
+                     French's large growth / large value portfolios
 * ``summary``        (JSON) as-of date, coverage, factor list and the backtest
 """
 
@@ -112,6 +116,7 @@ def main() -> int:
 
     panel = style.factor_panel(fund, close, divs, members, dates)
     panel = style.clean(panel, latest_caps())
+    gaps = style.style_gaps(panel)
     scored = style.score_panel(panel)
     log(f"Scored {len(dates)} dates ({time.time() - t0:.0f}s).")
 
@@ -135,6 +140,7 @@ def main() -> int:
     store.save_frame(MODULE, "stocks", stocks)
     store.save_frame(MODULE, "stock_history", stock_history.reset_index(drop=True))
     store.save_frame(MODULE, "sectors", sectors)
+    store.save_frame(MODULE, "gaps", gaps)
     store.save_json(MODULE, "summary", {
         "as_of": str(latest.date()), "members": len(current), "priced": int(len(today)), "scored": scored_today,
         "history_start": str(pd.Timestamp(month_ends[0]).date()), "value_factors": list(style.VALUE),

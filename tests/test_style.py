@@ -146,3 +146,29 @@ def test_a_quarter_waits_for_its_latest_filed_input():
     facts.loc[late, "filed_date"] = "2026-01-30"
     fund = style.fundamentals(facts, pd.DataFrame(columns=["symbol", "date", "stock_splits"]))
     assert fund.set_index("qend").loc[pd.Timestamp("2024-12-31"), "known"] == pd.Timestamp("2026-01-30")
+
+
+def test_asset_growth_is_the_log_change_over_four_quarters():
+    facts = _quarterly_facts("AAA")
+    assets = facts["concept"] == "Assets"
+    ends = pd.to_datetime(facts.loc[assets, "end_date"])
+    facts.loc[assets, "value"] = 1000.0 * 1.1 ** ((ends - ends.min()).dt.days / 365.25)   # +10% a year
+    fund = style.fundamentals(facts, pd.DataFrame(columns=["symbol", "date", "stock_splits"])).set_index("qend")
+    assert np.isnan(fund["ag"].iloc[3])                                 # no quarter a year back yet
+    assert fund["ag"].iloc[-1] == pytest.approx(np.log(1.1), abs=2e-3)
+
+
+def test_style_gaps_split_by_book_to_price():
+    n = 100
+    bp = np.linspace(0.05, 2.0, n)                                   # cheapest last
+    panel = pd.DataFrame({"date": pd.Timestamp("2025-06-30"), "symbol": [f"S{i}" for i in range(n)],
+                          "mcap": 1.0, "bp": bp, "ep": bp * 0.1,       # ROE 10% everywhere
+                          "ag": 0.1})
+    panel.loc[0, "bp"] = -0.5                                        # negative book is left out: 99 remain
+    panel.loc[1:30, "ag"] = 0.20                                     # the 30 lowest book / price
+    panel.loc[70:99, "ag"] = 0.05                                    # the 30 highest
+    g = style.style_gaps(panel).iloc[0]
+    assert g["growth_n"] == g["value_n"] == 30
+    assert g["ag_gap"] == pytest.approx(0.15)
+    assert g["roe_gap"] == pytest.approx(0.0)
+    assert g["value_spread"] == pytest.approx(np.log(bp[70:].mean() / bp[1:31].mean()))

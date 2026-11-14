@@ -165,6 +165,11 @@ def symbol_quarters(f: pd.DataFrame, splits: pd.Series) -> pd.DataFrame | None:
     df["shares"] = df["shares"] * split_factor(df["known"], splits)
     df["epsg3"] = growth_slope(df["ni_ttm"] / df["shares"])
     df["spsg3"] = growth_slope(df["rev_ttm"] / df["shares"])
+    # asset growth: log change of total assets over the last four quarters (not a style factor; see style_gaps)
+    year_back = pd.Series(idx, index=idx).diff(4).dt.days.between(340, 390)
+    a, a_prev = df["assets"], df["assets"].shift(4)
+    ok = year_back & (a > 0) & (a_prev > 0)
+    df["ag"] = np.log(a.where(ok) / a_prev.where(ok))
     return df.reset_index(names="qend")
 
 
@@ -204,6 +209,7 @@ def factor_panel(fund: pd.DataFrame, close: pd.DataFrame, dividends: pd.DataFram
             "sp": (snap["rev_ttm"] / cap).values, "dp": (dps / p).values,
             "epsg3": snap["epsg3"].values, "spsg3": snap["spsg3"].values,
             "inv": (snap["capex_ttm"] / snap["assets"]).values, "roa": (snap["ni_ttm"] / snap["assets"]).values,
+            "ag": snap["ag"].values if "ag" in snap else np.nan,
             "sector": p.index.map(m.drop_duplicates("symbol", keep="last").set_index("symbol")["gics_sector"]),
         }))
     return pd.concat(out, ignore_index=True)
@@ -275,6 +281,42 @@ def sector_scores(scored: pd.DataFrame) -> pd.DataFrame:
                                           stocks=("symbol", "size")).reset_index()
     g["value"], g["growth"] = g["wv"] / g["mcap"], g["wg"] / g["mcap"]
     return g[["date", "sector", "value", "growth", "mcap", "stocks"]]
+
+
+STYLE_SPLIT = (0.3, 0.7)   # growth = lowest 30% book / price, value = highest 30% (Fama-French breakpoints)
+MIN_GAP_STOCKS = 30
+
+
+def style_gaps(panel: pd.DataFrame, split: tuple[float, float] = STYLE_SPLIT, clip: float = CLIP) -> pd.DataFrame:
+    """Growth members against value members on each date, the way Fama and French's large growth /
+    large value portfolios are built: members with positive book and a cap, split by book / price at
+    the 30th and 70th percentiles (by count). Per group, cap-weighted: asset growth (``ag``, log
+    change over four quarters, clipped like the factors), aggregate book / price (sum of book / sum of
+    cap) and return on equity (sum of trailing earnings / sum of book). Gaps are growth minus value;
+    the value spread is log(value book / price) - log(growth book / price)."""
+    rows = []
+    for d, g in panel.groupby("date"):
+        g = g[(g["bp"] > 0) & (g["mcap"] > 0)]
+        if len(g) < MIN_GAP_STOCKS:
+            continue
+        lo, hi = g["bp"].quantile(list(split))
+        ag = g["ag"].clip(*g["ag"].quantile([clip, 1 - clip])) if g["ag"].notna().sum() >= 10 else g["ag"]
+        out: dict = {"date": d}
+        for name, m in (("growth", g["bp"] <= lo), ("value", g["bp"] >= hi)):
+            s, a = g[m], ag[m]
+            has = a.notna()
+            out[f"{name}_ag"] = float(np.average(a[has], weights=s["mcap"][has])) if has.any() else np.nan
+            out[f"{name}_ag_cover"] = float(s["mcap"][has].sum() / s["mcap"].sum())
+            out[f"{name}_bp"] = float((s["bp"] * s["mcap"]).sum() / s["mcap"].sum())
+            e = s["ep"].notna()
+            book = (s["bp"] * s["mcap"])[e].sum()
+            out[f"{name}_roe"] = float((s["ep"] * s["mcap"])[e].sum() / book) if book > 0 else np.nan
+            out[f"{name}_n"] = int(len(s))
+        out["ag_gap"] = out["growth_ag"] - out["value_ag"]
+        out["roe_gap"] = out["growth_roe"] - out["value_roe"]
+        out["value_spread"] = float(np.log(out["value_bp"] / out["growth_bp"]))
+        rows.append(out)
+    return pd.DataFrame(rows)
 
 
 # ------------------------------------------------------------------ does it forecast?
